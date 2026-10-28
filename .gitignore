@@ -1,0 +1,75 @@
+# ==========================================
+# Private Messenger - Root .gitignore
+# ==========================================
+
+# Secrets and local environment configuration
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+**/secrets/
+
+# Go backend
+backend/bin/
+backend/dist/
+backend/tmp/
+backend/coverage/
+*.test
+*.prof
+coverage.out
+coverage.html
+
+# Local databases and backups
+*.db
+*.sqlite
+*.sqlite3
+*.sql.gz
+*.dump
+postgres-data/
+**/postgres-data/
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+coverage/
+
+# Android
+*.jks
+*.keystore
+key.properties
+local.properties
+
+# iOS / macOS
+Pods/
+DerivedData/
+*.mobileprovision
+
+# IDEs and editors
+.vs/
+.vscode/
+.idea/
+*.iml
+*.user
+*.suo
+
+# Operating system
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temporary files and logs
+*.log
+*.tmp
+*.bak
+*.swp
+*~

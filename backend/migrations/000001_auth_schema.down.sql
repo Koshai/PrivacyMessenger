@@ -1,0 +1,5 @@
+
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS devices;
+DROP TABLE IF EXISTS email_challenges;
+DROP TABLE IF EXISTS users;
