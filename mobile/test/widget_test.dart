@@ -5,7 +5,7 @@ import 'package:private_messenger/main.dart';
 void main() {
   group('Private Messenger Navigation', () {
     testWidgets('Displays all three navigation tabs', (tester) async {
-      await tester.pumpWidget(const PrivateMessengerApp());
+      await tester.pumpWidget(const MaterialApp(home: MainNavigation()));
 
       expect(find.text('Chats'), findsWidgets);
       expect(find.text('Friends'), findsOneWidget);
@@ -13,7 +13,7 @@ void main() {
     });
 
     testWidgets('Opens Friends screen', (tester) async {
-      await tester.pumpWidget(const PrivateMessengerApp());
+      await tester.pumpWidget(const MaterialApp(home: MainNavigation()));
 
       await tester.tap(find.byIcon(Icons.people_outline));
       await tester.pumpAndSettle();
@@ -22,7 +22,7 @@ void main() {
     });
 
     testWidgets('Opens Settings screen', (tester) async {
-      await tester.pumpWidget(const PrivateMessengerApp());
+      await tester.pumpWidget(const MaterialApp(home: MainNavigation()));
 
       await tester.tap(find.byIcon(Icons.settings_outlined));
       await tester.pumpAndSettle();
@@ -31,7 +31,7 @@ void main() {
     });
 
     testWidgets('Displays empty chat state', (tester) async {
-      await tester.pumpWidget(const PrivateMessengerApp());
+      await tester.pumpWidget(const MaterialApp(home: MainNavigation()));
 
       expect(find.text('No conversations yet'), findsOneWidget);
     });

@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"example.com/private-messenger/backend/internal/auth"
 
@@ -93,7 +94,9 @@ func TestRequestOTPHTTPIntegration(t *testing.T) {
 	}
 
 	var response struct {
-		Message string `json:"message"`
+		Message     string    `json:"message"`
+		ChallengeID uuid.UUID `json:"challenge_id"`
+		ExpiresAt   time.Time `json:"expires_at"`
 	}
 
 	if err := json.Unmarshal(
@@ -107,6 +110,18 @@ func TestRequestOTPHTTPIntegration(t *testing.T) {
 		t.Fatal("missing response message")
 	}
 
+	if response.ChallengeID == uuid.Nil {
+		t.Fatal("missing challenge ID")
+	}
+
+	if response.ExpiresAt.IsZero() {
+		t.Fatal("missing OTP expiration")
+	}
+
+	if !response.ExpiresAt.After(time.Now()) {
+		t.Fatal("OTP expiration must be in the future")
+	}
+
 	messages := sender.Messages()
 	if len(messages) != 1 {
 		t.Fatalf(
@@ -118,6 +133,14 @@ func TestRequestOTPHTTPIntegration(t *testing.T) {
 	challengeID, err := uuid.Parse(messages[0].ChallengeID)
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	if response.ChallengeID != challengeID {
+		t.Fatal("response challenge ID differs from delivered OTP")
+	}
+
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("OTP response must not be cached")
 	}
 
 	var codeHash []byte

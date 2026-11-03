@@ -5,6 +5,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
+
+	"github.com/google/uuid"
 
 	"example.com/private-messenger/backend/internal/auth"
 )
@@ -24,7 +27,9 @@ type requestOTPBody struct {
 }
 
 type requestOTPResponse struct {
-	Message string `json:"message"`
+	Message     string    `json:"message"`
+	ChallengeID uuid.UUID `json:"challenge_id"`
+	ExpiresAt   time.Time `json:"expires_at"`
 }
 
 func (h *AuthHandler) RequestOTP(
@@ -62,7 +67,7 @@ func (h *AuthHandler) RequestOTP(
 	}
 
 	// Do not reveal whether an account exists.
-	_, err := h.requests.Request(r.Context(), body.Email)
+	result, err := h.requests.Request(r.Context(), body.Email)
 
 	switch {
 	case errors.Is(err, auth.ErrInvalidEmail):
@@ -82,7 +87,11 @@ func (h *AuthHandler) RequestOTP(
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 
+	w.Header().Set("Cache-Control", "no-store")
+
 	_ = json.NewEncoder(w).Encode(requestOTPResponse{
-		Message: "If delivery is available, a verification code has been sent.",
+		Message:     "If delivery is available, a verification code has been sent.",
+		ChallengeID: result.ChallengeID,
+		ExpiresAt:   result.ExpiresAt,
 	})
 }

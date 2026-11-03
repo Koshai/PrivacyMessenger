@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -64,7 +65,23 @@ func main() {
 
 	// Local development only. No actual emails are sent.
 	// Replace with a production sender before deployment.
-	sender := auth.NewMemoryOTPSender()
+
+	smtpPort, err := strconv.Atoi(os.Getenv("SMTP_PORT"))
+	if err != nil {
+		log.Fatal("SMTP_PORT must be a valid integer")
+	}
+
+	sender, err := auth.NewSMTPOTPSender(auth.SMTPConfig{
+		Host:     os.Getenv("SMTP_HOST"),
+		Port:     smtpPort,
+		Username: os.Getenv("SMTP_USERNAME"),
+		Password: os.Getenv("SMTP_PASSWORD"),
+		From:     os.Getenv("SMTP_FROM_EMAIL"),
+		FromName: os.Getenv("SMTP_FROM_NAME"),
+	})
+	if err != nil {
+		log.Fatalf("SMTP configuration failed: %v", err)
+	}
 
 	requestService, err := auth.NewOTPRequestService(
 		issuer,
