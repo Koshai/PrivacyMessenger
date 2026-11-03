@@ -12,6 +12,7 @@ type RouterDependencies struct {
 	VerifyHandler        *VerifyOTPHandler
 	SessionAuthenticator SessionAuthenticator
 	LogoutHandler        *LogoutHandler
+	FriendsHandler       *FriendsHandler
 }
 
 // NewConfiguredRouter is the central router factory.
@@ -64,6 +65,14 @@ func NewConfiguredRouter(
 						deps.LogoutHandler.Logout,
 					),
 				),
+			)
+		}
+
+		if deps.FriendsHandler != nil {
+			RegisterFriendsRoutes(
+				mux,
+				deps.SessionAuthenticator,
+				deps.FriendsHandler,
 			)
 		}
 	}

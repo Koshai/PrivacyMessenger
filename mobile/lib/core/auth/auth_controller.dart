@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../../features/auth/models/auth_identity.dart';
@@ -18,23 +20,45 @@ class AuthController extends ChangeNotifier {
 
   int _generation = 0;
   bool _disposed = false;
-
-  // ignore: prefer_initializing_formals
+  bool _signingOut = false;
+  Future<void> _storeGate = Future<void>.value();
 
   AuthController({
     required SessionStore store,
     required SessionValidator validate,
     required SessionRevoker revoke,
+    // ignore: prefer_initializing_formals
   }) : _store = store,
+       // ignore: prefer_initializing_formals
        _validate = validate,
+       // ignore: prefer_initializing_formals
        _revoke = revoke;
 
   AuthState get state => _state;
+
+  bool get isSigningOut => _signingOut;
+
+  Future<String?> sessionToken() async {
+    final session = await _withStore(_store.read);
+    return session?.token;
+  }
 
   void _update(AuthState next) {
     if (_disposed) return;
     _state = next;
     notifyListeners();
+  }
+
+  Future<T> _withStore<T>(Future<T> Function() action) {
+    final previous = _storeGate;
+    final gate = Completer<void>();
+    _storeGate = gate.future;
+
+    return previous.then((_) => action()).whenComplete(() {
+      if (!gate.isCompleted) {
+        gate.complete();
+      }
+    });
   }
 
   Future<void> restore() async {
@@ -43,7 +67,7 @@ class AuthController extends ChangeNotifier {
     _update(const AuthState(status: AuthStatus.checking));
 
     try {
-      final session = await _store.read();
+      final session = await _withStore(_store.read);
 
       if (_disposed || generation != _generation) return;
 
@@ -71,7 +95,7 @@ class AuthController extends ChangeNotifier {
     _update(const AuthState(status: AuthStatus.checking));
 
     try {
-      await _store.save(session);
+      await _withStore(() => _store.save(session));
 
       if (_disposed || generation != _generation) return;
 
@@ -97,7 +121,7 @@ class AuthController extends ChangeNotifier {
       if (identity.userId != session.userId ||
           identity.deviceId != session.deviceId ||
           !DateTime.now().toUtc().isBefore(identity.expiresAt)) {
-        await _store.clear();
+        await _withStore(_store.clear);
 
         if (_disposed || generation != _generation) return;
 
@@ -111,10 +135,8 @@ class AuthController extends ChangeNotifier {
     } on ApiException catch (e) {
       if (_disposed || generation != _generation) return;
 
-      // This matches the current ApiClient's 401 response.
-      // A typed API error will be preferable in a later refactor.
-      if (e.message == 'Session expired or revoked') {
-        await _store.clear();
+      if (e.isUnauthorized) {
+        await _withStore(_store.clear);
 
         if (_disposed || generation != _generation) return;
 
@@ -132,8 +154,44 @@ class AuthController extends ChangeNotifier {
 
   Future<void> clearLocalSession() async {
     ++_generation;
-    await _store.clear();
+    await _withStore(_store.clear);
     _update(const AuthState(status: AuthStatus.signedOut));
+  }
+
+  /// Revokes the server session then clears local storage.
+  ///
+  /// Concurrent calls are ignored while a logout is in flight.
+  /// Network failures propagate and leave the local session intact.
+  Future<void> signOut() async {
+    if (_signingOut || _disposed) return;
+
+    _signingOut = true;
+    final generation = ++_generation;
+
+    try {
+      final session = await _withStore(_store.read);
+
+      if (_disposed || generation != _generation) return;
+
+      if (session == null) {
+        await _withStore(_store.clear);
+        if (_disposed || generation != _generation) return;
+        _update(const AuthState(status: AuthStatus.signedOut));
+        return;
+      }
+
+      await _revoke(session.token);
+
+      if (_disposed || generation != _generation) return;
+
+      await _withStore(_store.clear);
+
+      if (_disposed || generation != _generation) return;
+
+      _update(const AuthState(status: AuthStatus.signedOut));
+    } finally {
+      _signingOut = false;
+    }
   }
 
   @override
@@ -141,23 +199,5 @@ class AuthController extends ChangeNotifier {
     _disposed = true;
     ++_generation;
     super.dispose();
-  }
-
-  Future<void> signOut() async {
-    final session = await _store.read();
-
-    if (session == null) {
-      await _store.clear();
-      _update(const AuthState(status: AuthStatus.signedOut));
-      return;
-    }
-
-    // The backend must confirm the session is revoked or invalid.
-    await _revoke(session.token);
-
-    // Only clear local storage after confirmed server response.
-    await _store.clear();
-
-    _update(const AuthState(status: AuthStatus.signedOut));
   }
 }

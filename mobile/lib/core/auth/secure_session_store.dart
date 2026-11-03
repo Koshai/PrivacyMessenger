@@ -11,7 +11,12 @@ class SecureSessionStore implements SessionStore {
   final FlutterSecureStorage _storage;
 
   SecureSessionStore({FlutterSecureStorage? storage})
-    : _storage = storage ?? const FlutterSecureStorage();
+    : _storage =
+          storage ??
+          const FlutterSecureStorage(
+            // v11 defaults to Keystore-backed AES-GCM (no EncryptedSharedPreferences API).
+            aOptions: AndroidOptions(),
+          );
 
   @override
   Future<void> save(AuthSession session) async {

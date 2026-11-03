@@ -54,7 +54,6 @@ class _PrivateMessengerAppState extends State<PrivateMessengerApp> {
   }
 
   @override
-  @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: _authController,
@@ -72,7 +71,11 @@ class _PrivateMessengerAppState extends State<PrivateMessengerApp> {
             break;
 
           case AuthStatus.authenticated:
-            home = MainNavigation(onLogout: _authController.signOut);
+            home = MainNavigation(
+              onLogout: _authController.signOut,
+              apiClient: _apiClient,
+              authController: _authController,
+            );
             break;
 
           case AuthStatus.signedOut:
@@ -108,8 +111,15 @@ class _PrivateMessengerAppState extends State<PrivateMessengerApp> {
 
 class MainNavigation extends StatefulWidget {
   final Future<void> Function()? onLogout;
+  final ApiClient? apiClient;
+  final AuthController? authController;
 
-  const MainNavigation({super.key, this.onLogout});
+  const MainNavigation({
+    super.key,
+    this.onLogout,
+    this.apiClient,
+    this.authController,
+  });
 
   @override
   State<MainNavigation> createState() => _MainNavigationState();
@@ -123,7 +133,10 @@ class _MainNavigationState extends State<MainNavigation> {
     // Create screens here so widget.onLogout is accessible.
     final screens = [
       const ChatsScreen(),
-      const FriendsScreen(),
+      FriendsScreen(
+        apiClient: widget.apiClient,
+        authController: widget.authController,
+      ),
       SettingsScreen(onLogout: widget.onLogout),
     ];
 

@@ -46,7 +46,13 @@ void main() {
 
     await expectLater(
       api.getAuthenticatedUser('revoked-token'),
-      throwsA(isA<ApiException>()),
+      throwsA(
+        isA<ApiException>().having(
+          (e) => e.kind,
+          'kind',
+          ApiErrorKind.unauthorized,
+        ),
+      ),
     );
   });
 

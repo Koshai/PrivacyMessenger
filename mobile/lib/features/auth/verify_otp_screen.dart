@@ -61,20 +61,20 @@ class _VerifyOtpScreenState extends State<VerifyOtpScreen> {
       if (!mounted) return;
 
       if (session.isExpired) {
-        throw ApiException('Session has already expired');
+        throw const ApiException(
+          'Session has already expired',
+          kind: ApiErrorKind.unauthorized,
+        );
       }
 
       await widget.authController.signIn(session);
 
       if (!mounted) return;
 
-      debugPrint(
-        'Authentication status: ${widget.authController.state.status}',
-      );
-
       final status = widget.authController.state.status;
 
       if (status == AuthStatus.authenticated) {
+        setState(() => _isVerified = true);
         return;
       }
 

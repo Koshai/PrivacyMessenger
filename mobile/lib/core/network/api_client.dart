@@ -6,14 +6,34 @@ import 'package:http/http.dart' as http;
 import '../../features/auth/models/otp_challenge.dart';
 import '../../features/auth/models/auth_session.dart';
 import '../../features/auth/models/auth_identity.dart';
+import '../../features/friends/models/friend.dart';
+
+enum ApiErrorKind {
+  unauthorized,
+  validation,
+  rateLimited,
+  network,
+  timeout,
+  server,
+  invalidResponse,
+  unknown,
+}
 
 class ApiException implements Exception {
   final String message;
+  final ApiErrorKind kind;
+  final int? statusCode;
 
-  const ApiException(this.message);
+  const ApiException(
+    this.message, {
+    this.kind = ApiErrorKind.unknown,
+    this.statusCode,
+  });
+
+  bool get isUnauthorized => kind == ApiErrorKind.unauthorized;
 
   @override
-  String toString() => 'ApiException: $message';
+  String toString() => 'ApiException($kind): $message';
 }
 
 class ApiClient {
@@ -31,20 +51,35 @@ class ApiClient {
           .timeout(const Duration(seconds: 5));
 
       if (response.statusCode != 200) {
-        throw ApiException('Health check failed: HTTP ${response.statusCode}');
+        throw ApiException(
+          'Health check failed: HTTP ${response.statusCode}',
+          kind: ApiErrorKind.server,
+          statusCode: response.statusCode,
+        );
       }
 
       final body = jsonDecode(response.body);
 
       if (body is! Map<String, dynamic>) {
-        throw const ApiException('Invalid health response');
+        throw const ApiException(
+          'Invalid health response',
+          kind: ApiErrorKind.invalidResponse,
+        );
       }
 
       return body['status'] == 'ok';
     } on ApiException {
       rethrow;
+    } on TimeoutException {
+      throw const ApiException(
+        'Health check timed out',
+        kind: ApiErrorKind.timeout,
+      );
     } catch (error) {
-      throw ApiException('Unable to reach API: ${error.runtimeType}');
+      throw ApiException(
+        'Unable to reach API: ${error.runtimeType}',
+        kind: ApiErrorKind.network,
+      );
     }
   }
 
@@ -52,7 +87,10 @@ class ApiClient {
     final normalizedEmail = email.trim();
 
     if (normalizedEmail.isEmpty) {
-      throw const ApiException('Email is required');
+      throw const ApiException(
+        'Email is required',
+        kind: ApiErrorKind.validation,
+      );
     }
 
     try {
@@ -65,15 +103,27 @@ class ApiClient {
           .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 400) {
-        throw const ApiException('Invalid email address');
+        throw const ApiException(
+          'Invalid email address',
+          kind: ApiErrorKind.validation,
+          statusCode: 400,
+        );
       }
 
       if (response.statusCode == 429) {
-        throw const ApiException('Too many requests. Please try again later.');
+        throw const ApiException(
+          'Too many requests. Please try again later.',
+          kind: ApiErrorKind.rateLimited,
+          statusCode: 429,
+        );
       }
 
       if (response.statusCode != 202) {
-        throw const ApiException('Unable to request verification code');
+        throw ApiException(
+          'Unable to request verification code',
+          kind: ApiErrorKind.server,
+          statusCode: response.statusCode,
+        );
       }
 
       final decoded = jsonDecode(response.body);
@@ -86,10 +136,19 @@ class ApiClient {
     } on ApiException {
       rethrow;
     } on FormatException {
-      throw const ApiException('Authentication server returned invalid data');
+      throw const ApiException(
+        'Authentication server returned invalid data',
+        kind: ApiErrorKind.invalidResponse,
+      );
+    } on TimeoutException {
+      throw const ApiException(
+        'Verification request timed out',
+        kind: ApiErrorKind.timeout,
+      );
     } catch (_) {
       throw const ApiException(
         'Unable to connect to the authentication server',
+        kind: ApiErrorKind.network,
       );
     }
   }
@@ -106,7 +165,10 @@ class ApiClient {
         !RegExp(r'^[0-9]{6}$').hasMatch(normalizedCode) ||
         normalizedDeviceName.isEmpty ||
         normalizedDeviceName.length > 100) {
-      throw ApiException('Invalid verification request');
+      throw const ApiException(
+        'Invalid verification request',
+        kind: ApiErrorKind.validation,
+      );
     }
 
     try {
@@ -131,33 +193,62 @@ class ApiClient {
             }
             return AuthSession.fromJson(decoded);
           } on FormatException {
-            throw ApiException('Authentication server returned invalid data');
+            throw const ApiException(
+              'Authentication server returned invalid data',
+              kind: ApiErrorKind.invalidResponse,
+              statusCode: 200,
+            );
           }
 
         case 400:
-          throw ApiException('Invalid verification request');
+          throw const ApiException(
+            'Invalid verification request',
+            kind: ApiErrorKind.validation,
+            statusCode: 400,
+          );
 
         case 401:
-          throw ApiException('Invalid or expired verification code');
+          throw const ApiException(
+            'Invalid or expired verification code',
+            kind: ApiErrorKind.unauthorized,
+            statusCode: 401,
+          );
 
         case 429:
-          throw ApiException('Too many attempts. Please try again later.');
+          throw const ApiException(
+            'Too many attempts. Please try again later.',
+            kind: ApiErrorKind.rateLimited,
+            statusCode: 429,
+          );
 
         default:
-          throw ApiException('Unable to verify your code. Please try again.');
+          throw ApiException(
+            'Unable to verify your code. Please try again.',
+            kind: ApiErrorKind.server,
+            statusCode: response.statusCode,
+          );
       }
     } on ApiException {
       rethrow;
     } on TimeoutException {
-      throw ApiException('Verification request timed out');
+      throw const ApiException(
+        'Verification request timed out',
+        kind: ApiErrorKind.timeout,
+      );
     } catch (_) {
-      throw ApiException('Unable to connect to authentication server');
+      throw const ApiException(
+        'Unable to connect to authentication server',
+        kind: ApiErrorKind.network,
+      );
     }
   }
 
   Future<AuthIdentity> getAuthenticatedUser(String token) async {
     if (token.trim().isEmpty) {
-      throw ApiException('Authentication required');
+      throw const ApiException(
+        'Authentication required',
+        kind: ApiErrorKind.unauthorized,
+      );
     }
 
     try {
@@ -180,21 +271,39 @@ class ApiClient {
             }
             return AuthIdentity.fromJson(decoded);
           } on FormatException {
-            throw ApiException('Authentication server returned invalid data');
+            throw const ApiException(
+              'Authentication server returned invalid data',
+              kind: ApiErrorKind.invalidResponse,
+              statusCode: 200,
+            );
           }
 
         case 401:
-          throw ApiException('Session expired or revoked');
+          throw const ApiException(
+            'Session expired or revoked',
+            kind: ApiErrorKind.unauthorized,
+            statusCode: 401,
+          );
 
         default:
-          throw ApiException('Unable to validate session');
+          throw ApiException(
+            'Unable to validate session',
+            kind: ApiErrorKind.server,
+            statusCode: response.statusCode,
+          );
       }
     } on ApiException {
       rethrow;
     } on TimeoutException {
-      throw ApiException('Session validation timed out');
+      throw const ApiException(
+        'Session validation timed out',
+        kind: ApiErrorKind.timeout,
+      );
     } catch (_) {
-      throw ApiException('Unable to connect to authentication server');
+      throw const ApiException(
+        'Unable to connect to authentication server',
+        kind: ApiErrorKind.network,
+      );
     }
   }
 
@@ -211,18 +320,306 @@ class ApiClient {
             },
           )
           .timeout(const Duration(seconds: 10));
-    } catch (_) {
-      throw ApiException(
+    } on TimeoutException {
+      throw const ApiException(
         'Unable to contact the server. Please try logging out again.',
+        kind: ApiErrorKind.timeout,
+      );
+    } catch (_) {
+      throw const ApiException(
+        'Unable to contact the server. Please try logging out again.',
+        kind: ApiErrorKind.network,
       );
     }
 
+    // 401 means the session is already invalid server-side; treat as success.
     if (response.statusCode == 200 ||
         response.statusCode == 204 ||
         response.statusCode == 401) {
       return;
     }
 
-    throw ApiException('Unable to complete logout. Please try again.');
+    throw ApiException(
+      'Unable to complete logout. Please try again.',
+      kind: ApiErrorKind.server,
+      statusCode: response.statusCode,
+    );
+  }
+
+  Map<String, String> _authHeaders(String token) => {
+    'Authorization': 'Bearer $token',
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+  };
+
+  Future<http.Response> _authed(
+    String token,
+    Future<http.Response> Function() send,
+  ) async {
+    if (token.trim().isEmpty) {
+      throw const ApiException(
+        'Authentication required',
+        kind: ApiErrorKind.unauthorized,
+      );
+    }
+
+    try {
+      return await send().timeout(const Duration(seconds: 10));
+    } on ApiException {
+      rethrow;
+    } on TimeoutException {
+      throw const ApiException(
+        'Request timed out',
+        kind: ApiErrorKind.timeout,
+      );
+    } catch (_) {
+      throw const ApiException(
+        'Unable to connect to the server',
+        kind: ApiErrorKind.network,
+      );
+    }
+  }
+
+  void _ensureFriendsSuccess(http.Response response, {required Set<int> ok}) {
+    if (ok.contains(response.statusCode)) {
+      return;
+    }
+
+    switch (response.statusCode) {
+      case 400:
+        throw ApiException(
+          response.body.trim().isEmpty ? 'Invalid friends request' : response.body.trim(),
+          kind: ApiErrorKind.validation,
+          statusCode: 400,
+        );
+      case 401:
+        throw const ApiException(
+          'Session expired or revoked',
+          kind: ApiErrorKind.unauthorized,
+          statusCode: 401,
+        );
+      case 403:
+        throw ApiException(
+          response.body.trim().isEmpty ? 'Not allowed' : response.body.trim(),
+          kind: ApiErrorKind.validation,
+          statusCode: 403,
+        );
+      case 404:
+        throw ApiException(
+          response.body.trim().isEmpty ? 'Not found' : response.body.trim(),
+          kind: ApiErrorKind.server,
+          statusCode: 404,
+        );
+      case 409:
+        throw ApiException(
+          response.body.trim().isEmpty ? 'Conflict' : response.body.trim(),
+          kind: ApiErrorKind.validation,
+          statusCode: 409,
+        );
+      case 429:
+        throw const ApiException(
+          'Too many requests. Please try again later.',
+          kind: ApiErrorKind.rateLimited,
+          statusCode: 429,
+        );
+      default:
+        throw ApiException(
+          'Friends request failed',
+          kind: ApiErrorKind.server,
+          statusCode: response.statusCode,
+        );
+    }
+  }
+
+  Future<void> sendFriendRequest({
+    required String token,
+    required String email,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.post(
+        baseUri.resolve('/friends/requests'),
+        headers: _authHeaders(token),
+        body: jsonEncode({'email': email.trim()}),
+      ),
+    );
+    _ensureFriendsSuccess(response, ok: {202});
+  }
+
+  Future<List<Friend>> listFriends(String token) async {
+    final response = await _authed(
+      token,
+      () => client.get(
+        baseUri.resolve('/friends'),
+        headers: _authHeaders(token),
+      ),
+    );
+    _ensureFriendsSuccess(response, ok: {200});
+
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic> || decoded['friends'] is! List) {
+      throw const ApiException(
+        'Invalid friends response',
+        kind: ApiErrorKind.invalidResponse,
+      );
+    }
+
+    return (decoded['friends'] as List)
+        .whereType<Map<String, dynamic>>()
+        .map(Friend.fromJson)
+        .toList();
+  }
+
+  Future<int> friendCount(String token) async {
+    final response = await _authed(
+      token,
+      () => client.get(
+        baseUri.resolve('/friends/count'),
+        headers: _authHeaders(token),
+      ),
+    );
+    _ensureFriendsSuccess(response, ok: {200});
+
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic> || decoded['count'] is! int) {
+      throw const ApiException(
+        'Invalid friend count response',
+        kind: ApiErrorKind.invalidResponse,
+      );
+    }
+    return decoded['count'] as int;
+  }
+
+  Future<List<FriendRequest>> listIncomingFriendRequests(String token) async {
+    final response = await _authed(
+      token,
+      () => client.get(
+        baseUri.resolve('/friends/requests/incoming'),
+        headers: _authHeaders(token),
+      ),
+    );
+    _ensureFriendsSuccess(response, ok: {200});
+    return _parseRequests(response.body);
+  }
+
+  Future<List<FriendRequest>> listOutgoingFriendRequests(String token) async {
+    final response = await _authed(
+      token,
+      () => client.get(
+        baseUri.resolve('/friends/requests/outgoing'),
+        headers: _authHeaders(token),
+      ),
+    );
+    _ensureFriendsSuccess(response, ok: {200});
+    return _parseRequests(response.body);
+  }
+
+  List<FriendRequest> _parseRequests(String body) {
+    final decoded = jsonDecode(body);
+    if (decoded is! Map<String, dynamic> || decoded['requests'] is! List) {
+      throw const ApiException(
+        'Invalid friend requests response',
+        kind: ApiErrorKind.invalidResponse,
+      );
+    }
+    return (decoded['requests'] as List)
+        .whereType<Map<String, dynamic>>()
+        .map(FriendRequest.fromJson)
+        .toList();
+  }
+
+  Future<void> acceptFriendRequest({
+    required String token,
+    required String requestId,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.post(
+        baseUri.resolve('/friends/requests/$requestId/accept'),
+        headers: _authHeaders(token),
+      ),
+    );
+    _ensureFriendsSuccess(response, ok: {204});
+  }
+
+  Future<void> rejectFriendRequest({
+    required String token,
+    required String requestId,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.post(
+        baseUri.resolve('/friends/requests/$requestId/reject'),
+        headers: _authHeaders(token),
+      ),
+    );
+    _ensureFriendsSuccess(response, ok: {204});
+  }
+
+  Future<void> removeFriend({
+    required String token,
+    required String userId,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.delete(
+        baseUri.resolve('/friends/$userId'),
+        headers: _authHeaders(token),
+      ),
+    );
+    _ensureFriendsSuccess(response, ok: {204});
+  }
+
+  Future<void> blockUser({
+    required String token,
+    required String userId,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.post(
+        baseUri.resolve('/friends/blocks'),
+        headers: _authHeaders(token),
+        body: jsonEncode({'user_id': userId}),
+      ),
+    );
+    _ensureFriendsSuccess(response, ok: {204});
+  }
+
+  Future<void> unblockUser({
+    required String token,
+    required String userId,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.delete(
+        baseUri.resolve('/friends/blocks/$userId'),
+        headers: _authHeaders(token),
+      ),
+    );
+    _ensureFriendsSuccess(response, ok: {204});
+  }
+
+  Future<List<BlockedUser>> listBlockedUsers(String token) async {
+    final response = await _authed(
+      token,
+      () => client.get(
+        baseUri.resolve('/friends/blocks'),
+        headers: _authHeaders(token),
+      ),
+    );
+    _ensureFriendsSuccess(response, ok: {200});
+
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic> || decoded['blocked'] is! List) {
+      throw const ApiException(
+        'Invalid blocked users response',
+        kind: ApiErrorKind.invalidResponse,
+      );
+    }
+
+    return (decoded['blocked'] as List)
+        .whereType<Map<String, dynamic>>()
+        .map(BlockedUser.fromJson)
+        .toList();
   }
 }

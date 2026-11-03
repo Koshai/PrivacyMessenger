@@ -46,8 +46,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
       if (!mounted) return;
 
-      if (!mounted) return;
-
       Navigator.of(context).push(
         MaterialPageRoute<void>(
           builder: (_) => VerifyOtpScreen(
@@ -59,9 +57,6 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         ),
       );
-
-      // Next lesson:
-      // Navigate to OTP verification using challenge.challengeId.
     } on ApiException catch (error) {
       if (!mounted) return;
 
