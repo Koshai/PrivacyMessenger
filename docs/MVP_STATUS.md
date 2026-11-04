@@ -2,8 +2,8 @@
 
 **Updated:** 2026-11-03  
 **Repository:** https://github.com/Koshai/PrivacyMessenger  
-**Remote `origin/master`:** see `docs/E2EE_C4_REPORT.md` for exact C4 SHA after push  
-**Prior HEAD:** `1ad22da` — *C3 completed*
+**Remote `origin/master` HEAD:** `4e74c81` — *C4: final E2EE verification*  
+**CI:** [41776665396](https://github.com/Koshai/PrivacyMessenger/actions/runs/41776665396) **success**
 
 ## Milestone progress
 
@@ -11,7 +11,7 @@
 | --- | --- |
 | A — Auth | Complete |
 | B — Friends | Complete |
-| C — E2EE | **C4 verification complete locally; Milestone C complete only after remote CI green** |
+| C — E2EE | **Complete (C4)** — remote CI green; residual limitations in `docs/E2EE_C4_REPORT.md` |
 | D — Calls | Not started — stop for review |
 | E — Release | Not started |
 
@@ -27,7 +27,7 @@
 | Enrollment lifecycle states | Implemented + tested |
 | Android emulator OpenMLS suite | Pass |
 | iOS | macOS CI `ios-compile` + OpenMLS unit tests (gate via Actions) |
-| GitHub Actions | Must be green on C4 commit before calling C complete |
+| GitHub Actions | **Pass** (`go`, `flutter`, `ios-compile`, `live-e2e`) |
 
 ## Logout / history policy
 
@@ -35,4 +35,4 @@ Logout destroys MLS keys and marks enrollment **revoked**. Local encrypted DB ci
 
 ## Next
 
-Review C4 + confirm remote CI green → product sign-off on Milestone C → only then Milestone D.
+Product review of C4 / residual limitations → only then Milestone D.

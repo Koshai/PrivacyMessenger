@@ -2,8 +2,9 @@
 
 **Date:** 2026-11-03  
 **Base remote commit before C4:** `1ad22da` (*C3 completed*)  
+**C4 remote commit:** `4e74c81661173bfe8b156425a1daa55331e4dd0e` (`4e74c81`)  
 **Prior CI on C3:** [run 41775116006](https://github.com/Koshai/PrivacyMessenger/actions/runs/41775116006) — **failure** (`govulncheck` on Go 1.26.5 / `golang.org/x/text@v0.29.0`)  
-**Flutter + iOS jobs on that run:** already **success**
+**C4 CI:** [run 41776665396](https://github.com/Koshai/PrivacyMessenger/actions/runs/41776665396) — **success** (`go`, `flutter`, `ios-compile`, `live-e2e`)
 
 ## Objective
 
@@ -19,7 +20,7 @@ Complete verification and release hardening for Milestone C. Milestone D (calls)
 | Local `govulncheck ./...` | **No vulnerabilities found** |
 | Misleading Flutter audit (`dart pub outdated \|\| true`) | **Removed**; replaced with `flutter pub deps` |
 | CI jobs | `go`, `flutter`, `ios-compile` (+ native OpenMLS tests), **`live-e2e`** |
-| Remote CI after C4 push | See section “Remote commit & CI” below (must finish green before claiming pass) |
+| Remote CI after C4 push | **success** — [41776665396](https://github.com/Koshai/PrivacyMessenger/actions/runs/41776665396) |
 
 ## Task 2 — Secure enrollment lifecycle
 
@@ -98,11 +99,12 @@ Covered: auth fixtures, friendship, identity + KP upload/claim, MLS group, Welco
 1. Crypto rate limiter is **not** cluster-safe (single API process).
 2. Safety-number screen is implemented and tested; not yet wired into every conversation chrome entry point.
 3. Production TLS is enforced only when `REQUIRE_TLS`/`APP_ENV=production` is set by operators.
-4. Milestone C completeness also depends on **remote GitHub Actions finishing green** on the C4 commit.
+4. Crypto rate limiter remains single-process; operators must not assume multi-instance fairness without a shared store.
 
 ## Milestone C verdict
 
 C4 closes the remaining verification gaps from C3.  
-**Mark Milestone C complete only after remote CI on the C4 commit is green** (including `live-e2e` and `ios-compile`).
+**Remote CI is green** on `4e74c81` (including `live-e2e` and `ios-compile`).  
+**Milestone C may be marked complete** pending product sign-off on residual limitations above.
 
 **Stop before Milestone D.**
