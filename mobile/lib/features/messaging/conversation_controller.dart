@@ -64,6 +64,7 @@ class ConversationController extends ChangeNotifier {
         peerUserId: peerUserId,
       );
       conversationId = info.conversationId;
+      _service.bindConversationPeer(info.conversationId, peerUserId);
 
       // Joiner path: ingest history/pending for Welcome.
       final pending = await api.syncPending(token: token);

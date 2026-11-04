@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import '../../../core/crypto/protocol_messages.dart';
+
 class MessageEnvelope {
   final String id;
   final String conversationId;
@@ -8,6 +10,7 @@ class MessageEnvelope {
   final List<int> ciphertext;
   final String contentType;
   final DateTime createdAt;
+  final int conversationSeq;
 
   const MessageEnvelope({
     required this.id,
@@ -17,6 +20,7 @@ class MessageEnvelope {
     required this.ciphertext,
     required this.contentType,
     required this.createdAt,
+    this.conversationSeq = 0,
   });
 
   factory MessageEnvelope.fromJson(Map<String, dynamic> json) {
@@ -25,6 +29,10 @@ class MessageEnvelope {
     if (created == null) {
       throw const FormatException('Invalid envelope timestamp');
     }
+    final seqRaw = json['conversation_seq'];
+    final seq = seqRaw is int
+        ? seqRaw
+        : int.tryParse('$seqRaw') ?? 0;
     return MessageEnvelope(
       id: json['id'] as String,
       conversationId: json['conversation_id'] as String,
@@ -33,7 +41,23 @@ class MessageEnvelope {
       ciphertext: base64Decode(b64),
       contentType: json['content_type'] as String? ?? 'application/opaque',
       createdAt: created.toUtc(),
+      conversationSeq: seq,
     );
+  }
+
+  /// Protocol priority: Welcome before Commit before application.
+  int get protocolRank {
+    switch (contentType) {
+      case MlsContentTypes.welcome:
+        return 0;
+      case MlsContentTypes.commit:
+      case MlsContentTypes.proposal:
+        return 1;
+      case MlsContentTypes.application:
+        return 2;
+      default:
+        return 3;
+    }
   }
 }
 
@@ -100,4 +124,15 @@ class ChatMessageView {
       error: error,
     );
   }
+}
+
+int compareEnvelopesForProcessing(MessageEnvelope a, MessageEnvelope b) {
+  final byConv = a.conversationId.compareTo(b.conversationId);
+  if (byConv != 0) return byConv;
+  if (a.conversationSeq != b.conversationSeq) {
+    return a.conversationSeq.compareTo(b.conversationSeq);
+  }
+  final byRank = a.protocolRank.compareTo(b.protocolRank);
+  if (byRank != 0) return byRank;
+  return a.createdAt.compareTo(b.createdAt);
 }

@@ -80,4 +80,43 @@ void main() {
     await store.clearOnLogout(userId: 'u', deviceId: 'd');
     expect(await store.read(userId: 'u', deviceId: 'd'), isNull);
   });
+
+  test('corrupted enrolled material refuses silent regeneration', () async {
+    final storage = FlutterSecureStorage();
+    FlutterSecureStorage.setMockInitialValues({});
+    final store = DeviceCryptoStore(storage: storage);
+
+    await store.loadOrCreate(
+      userId: 'u2',
+      deviceId: 'd2',
+      identityLabel: 'u2',
+      createIdentity: () async => const DeviceIdentityRecord(
+        identityLabel: 'u2',
+        publicKey: [4, 5, 6],
+        signerBytes: [7, 8, 9],
+      ),
+      createDatabaseKey: () async => Uint8List.fromList(List.filled(32, 4)),
+    );
+
+    // Corrupt the blob but keep enrollment marker.
+    await storage.write(
+      key: 'device_crypto_v1_u2_d2',
+      value: '{not-json',
+    );
+
+    await expectLater(
+      store.loadOrCreate(
+        userId: 'u2',
+        deviceId: 'd2',
+        identityLabel: 'u2',
+        createIdentity: () async => const DeviceIdentityRecord(
+          identityLabel: 'u2',
+          publicKey: [9],
+          signerBytes: [9],
+        ),
+        createDatabaseKey: () async => Uint8List.fromList(List.filled(32, 9)),
+      ),
+      throwsA(isA<CryptoKeyLossException>()),
+    );
+  });
 }

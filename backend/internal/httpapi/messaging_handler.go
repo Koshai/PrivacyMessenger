@@ -244,6 +244,7 @@ func mapEnvelope(e messaging.Envelope) map[string]any {
 		"ciphertext_b64":    base64.StdEncoding.EncodeToString(e.Ciphertext),
 		"content_type":      e.ContentType,
 		"created_at":        e.CreatedAt.UTC(),
+		"conversation_seq":  e.ConversationSeq,
 	}
 }
 

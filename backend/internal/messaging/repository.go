@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -115,25 +114,38 @@ func (r *Repository) InsertEnvelope(
 	}
 	defer tx.Rollback(ctx)
 
+	// Idempotent fast-path before allocating a sequence number.
+	existing, err := r.loadByClientID(ctx, tx, envelope.ConversationID, envelope.SenderID, envelope.ClientMessageID)
+	if err == nil {
+		if err := tx.Commit(ctx); err != nil {
+			return SendResult{}, err
+		}
+		return SendResult{Envelope: existing, Created: false}, nil
+	}
+	if !errors.Is(err, errEnvelopeNotInTx) {
+		return SendResult{}, err
+	}
+
+	// Allocate conversation_seq in this transaction so commit order == seq order.
+	var convSeq int64
+	err = tx.QueryRow(ctx, `
+		UPDATE conversations
+		SET next_envelope_seq = next_envelope_seq + 1
+		WHERE id = $1
+		RETURNING next_envelope_seq
+	`, envelope.ConversationID).Scan(&convSeq)
+	if err != nil {
+		return SendResult{}, fmt.Errorf("allocate conversation seq: %w", err)
+	}
+	envelope.ConversationSeq = convSeq
+
 	_, err = tx.Exec(ctx, `
 		INSERT INTO message_envelopes
-			(id, conversation_id, sender_id, client_message_id, ciphertext, content_type, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+			(id, conversation_id, sender_id, client_message_id, ciphertext, content_type, created_at, conversation_seq)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`, envelope.ID, envelope.ConversationID, envelope.SenderID, envelope.ClientMessageID,
-		envelope.Ciphertext, envelope.ContentType, envelope.CreatedAt)
-
+		envelope.Ciphertext, envelope.ContentType, envelope.CreatedAt, envelope.ConversationSeq)
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			existing, lookupErr := r.loadByClientID(ctx, tx, envelope.ConversationID, envelope.SenderID, envelope.ClientMessageID)
-			if lookupErr != nil {
-				return SendResult{}, lookupErr
-			}
-			if err := tx.Commit(ctx); err != nil {
-				return SendResult{}, err
-			}
-			return SendResult{Envelope: existing, Created: false}, nil
-		}
 		return SendResult{}, fmt.Errorf("insert envelope: %w", err)
 	}
 
@@ -151,6 +163,8 @@ func (r *Repository) InsertEnvelope(
 	return SendResult{Envelope: envelope, Created: true}, nil
 }
 
+var errEnvelopeNotInTx = errors.New("envelope not in transaction")
+
 func (r *Repository) loadByClientID(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -159,14 +173,19 @@ func (r *Repository) loadByClientID(
 ) (Envelope, error) {
 	var e Envelope
 	err := tx.QueryRow(ctx, `
-		SELECT id, conversation_id, sender_id, client_message_id, ciphertext, content_type, created_at
+		SELECT id, conversation_id, sender_id, client_message_id, ciphertext, content_type, created_at,
+		       COALESCE(conversation_seq, 0)
 		FROM message_envelopes
 		WHERE conversation_id = $1
 		  AND sender_id = $2
 		  AND client_message_id = $3
 	`, conversationID, senderID, clientMessageID).Scan(
 		&e.ID, &e.ConversationID, &e.SenderID, &e.ClientMessageID, &e.Ciphertext, &e.ContentType, &e.CreatedAt,
+		&e.ConversationSeq,
 	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Envelope{}, errEnvelopeNotInTx
+	}
 	if err != nil {
 		return Envelope{}, fmt.Errorf("load idempotent envelope: %w", err)
 	}
@@ -187,19 +206,21 @@ func (r *Repository) ListEnvelopes(
 	var err error
 	if before == nil {
 		rows, err = r.db.Query(ctx, `
-			SELECT id, conversation_id, sender_id, client_message_id, ciphertext, content_type, created_at
+			SELECT id, conversation_id, sender_id, client_message_id, ciphertext, content_type, created_at,
+			       COALESCE(conversation_seq, 0)
 			FROM message_envelopes
 			WHERE conversation_id = $1
-			ORDER BY created_at DESC, id DESC
+			ORDER BY conversation_seq DESC NULLS LAST, created_at DESC, id DESC
 			LIMIT $2
 		`, conversationID, limit)
 	} else {
 		rows, err = r.db.Query(ctx, `
-			SELECT id, conversation_id, sender_id, client_message_id, ciphertext, content_type, created_at
+			SELECT id, conversation_id, sender_id, client_message_id, ciphertext, content_type, created_at,
+			       COALESCE(conversation_seq, 0)
 			FROM message_envelopes
 			WHERE conversation_id = $1
 			  AND (created_at, id) < ($2, $3)
-			ORDER BY created_at DESC, id DESC
+			ORDER BY conversation_seq DESC NULLS LAST, created_at DESC, id DESC
 			LIMIT $4
 		`, conversationID, before.CreatedAt, before.ID, limit)
 	}
@@ -213,6 +234,7 @@ func (r *Repository) ListEnvelopes(
 		var e Envelope
 		if err := rows.Scan(
 			&e.ID, &e.ConversationID, &e.SenderID, &e.ClientMessageID, &e.Ciphertext, &e.ContentType, &e.CreatedAt,
+			&e.ConversationSeq,
 		); err != nil {
 			return nil, err
 		}
@@ -249,12 +271,13 @@ func (r *Repository) ListPendingForRecipient(
 		limit = 50
 	}
 	rows, err := r.db.Query(ctx, `
-		SELECT e.id, e.conversation_id, e.sender_id, e.client_message_id, e.ciphertext, e.content_type, e.created_at
+		SELECT e.id, e.conversation_id, e.sender_id, e.client_message_id, e.ciphertext, e.content_type, e.created_at,
+		       COALESCE(e.conversation_seq, 0)
 		FROM message_deliveries d
 		JOIN message_envelopes e ON e.id = d.envelope_id
 		WHERE d.recipient_id = $1
 		  AND d.acknowledged_at IS NULL
-		ORDER BY e.created_at ASC, e.id ASC
+		ORDER BY e.conversation_id ASC, e.conversation_seq ASC NULLS LAST, e.created_at ASC, e.id ASC
 		LIMIT $2
 	`, recipientID, limit)
 	if err != nil {
@@ -267,6 +290,7 @@ func (r *Repository) ListPendingForRecipient(
 		var e Envelope
 		if err := rows.Scan(
 			&e.ID, &e.ConversationID, &e.SenderID, &e.ClientMessageID, &e.Ciphertext, &e.ContentType, &e.CreatedAt,
+			&e.ConversationSeq,
 		); err != nil {
 			return nil, err
 		}

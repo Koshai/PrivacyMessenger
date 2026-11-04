@@ -53,8 +53,17 @@ Ordering: clients must process envelopes by `created_at` ascending (and `seq` wh
 - `GET /envelopes/pending`
 - `POST /envelopes/{envelopeID}/ack` → `204`
 
+## Envelope ordering
+
+Responses include `conversation_seq` (monotonic per conversation, allocated in the same DB transaction as the insert). Clients **must** process by `(conversation_id, conversation_seq)` ascending, with Welcome before Commit/application when ranks collide.
+
 ## Realtime hints
 
-`GET /realtime/ws` (Bearer or `?access_token=`)
+`GET /realtime/ws`
+
+1. Connect **without** credentials in the URL (`access_token` query is rejected).
+2. Send first text frame: `{"type":"auth","token":"<session token>"}`.
+3. Server replies `{"type":"connected",...}` or closes the socket.
+4. Server re-validates the session periodically and emits `session_revoked` on logout/replacement.
 
 Push events are **hints** only. After reconnect, clients must call pending sync. PostgreSQL remains the durable source of truth.

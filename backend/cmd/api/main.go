@@ -106,13 +106,12 @@ func main() {
 
 	sessionRepository := auth.NewSessionRepository(db)
 
-	logoutHandler := httpapi.NewLogoutHandler(sessionRepository)
+	hub := realtime.NewHub()
+	realtimeHandler := httpapi.NewRealtimeHandler(hub, sessionRepository)
+	logoutHandler := httpapi.NewLogoutHandler(sessionRepository).WithDisconnecter(realtimeHandler)
 
 	friendsService := friends.NewService(db)
 	friendsHandler := httpapi.NewFriendsHandler(friendsService)
-
-	hub := realtime.NewHub()
-	realtimeHandler := httpapi.NewRealtimeHandler(hub, sessionRepository)
 
 	messagingInner := messaging.NewService(
 		messaging.NewRepository(db),

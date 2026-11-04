@@ -24,6 +24,7 @@ type memoryStore struct {
 	envelopes     map[uuid.UUID]Envelope
 	byClient      map[string]uuid.UUID
 	deliveries    map[[2]uuid.UUID]*time.Time // envelope+recipient -> ack
+	nextSeq       map[uuid.UUID]int64
 }
 
 func newMemoryStore() *memoryStore {
@@ -33,6 +34,7 @@ func newMemoryStore() *memoryStore {
 		envelopes:     map[uuid.UUID]Envelope{},
 		byClient:      map[string]uuid.UUID{},
 		deliveries:    map[[2]uuid.UUID]*time.Time{},
+		nextSeq:       map[uuid.UUID]int64{},
 	}
 }
 
@@ -88,6 +90,8 @@ func (m *memoryStore) InsertEnvelope(_ context.Context, envelope Envelope, recip
 	if id, ok := m.byClient[key]; ok {
 		return SendResult{Envelope: m.envelopes[id], Created: false}, nil
 	}
+	m.nextSeq[envelope.ConversationID]++
+	envelope.ConversationSeq = m.nextSeq[envelope.ConversationID]
 	m.envelopes[envelope.ID] = envelope
 	m.byClient[key] = envelope.ID
 	m.deliveries[[2]uuid.UUID{envelope.ID, recipientID}] = nil

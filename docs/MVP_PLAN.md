@@ -38,9 +38,10 @@
 **Acceptance:** charter crypto/message tests; never claim properties the library does not provide and test. No AGPL/GPL deps without approval.
 
 **Status:**
-- **C1** (committed `e594b14`): dependency review + isolated OpenMLS PoC + native tests.
-- **C2** (local/uncommitted for review): DeviceCryptoStore, key-package API, MLS group mapping, chat UI, WebSocket — see `docs/E2EE_C2_REPORT.md`.
-- **Milestone C not complete** until E2E, iOS, migration/integration gates, and blockers in the C2 report are closed.
+- **C1** (`e594b14`): OpenMLS PoC + dependency review.
+- **C2** (`cff4c95` on remote): DeviceCryptoStore, key packages, MLS mapping, chat UI, WebSocket.
+- **C3** (local): secure WS handshake, durable `conversation_seq`, enrollment fail-closed, Postgres E2E, CI — see `docs/E2EE_C3_REPORT.md`.
+- **Milestone C not complete** until iOS verification (or explicit waiver) and CI green; then product sign-off.
 
 ## Milestone D — One-to-one audio/video calls
 

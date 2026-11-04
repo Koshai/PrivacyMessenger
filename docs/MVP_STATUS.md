@@ -2,43 +2,35 @@
 
 **Updated:** 2026-11-03  
 **Repository:** https://github.com/Koshai/PrivacyMessenger  
-**Committed HEAD (`origin/master`):** `e594b14` — *Milestone C partially complete* (C1 OpenMLS PoC + opaque envelopes)  
-**Working tree:** local **uncommitted** Milestone C2 implementation (DeviceCryptoStore, key packages, MLS delivery, chat UI, WebSocket)
+**Remote `origin/master` HEAD:** `cff4c95` — *Milestone C2ready*  
+**Local:** uncommitted **Milestone C3** verification work (WebSocket handshake, durable seq, DeviceCryptoStore enrollment marker, E2E harness, CI)
 
 ## Milestone progress
 
 | Milestone | Status |
 | --- | --- |
-| A — Auth | Complete (committed) |
-| B — Friends | Complete (committed) |
-| C — E2EE | **C1 committed; C2 implemented locally for review — Milestone C not complete** |
+| A — Auth | Complete |
+| B — Friends | Complete |
+| C — E2EE | **C1+C2 on remote; C3 local for review — Milestone C not complete** (iOS unwaived) |
 | D — Calls | Not started |
 | E — Release | Not started |
 
-## C2 session results (executed)
+## C3 gates (executed locally)
 
-| Suite | Result |
+| Gate | Result |
 | --- | --- |
-| `flutter analyze` | No issues |
-| `flutter test` | **81 passed** |
-| `flutter build apk --debug` | **Success** |
-| `go test ./...` | **pass** |
-| `go vet ./...` | **pass** (via test build) |
-| Android emulator OpenMLS smoke | C1 smoke previously passed; re-run recommended after C2 UI wiring |
-| iOS | **Not run** (Windows host) |
-| Full two-account live API E2E | **Not automated this session** — blocker for C complete |
+| `flutter analyze` / `flutter test` | Pass |
+| `go test` incl. `internal/e2e` + Postgres | Pass |
+| Migrations 000006 + 000007 on Docker Postgres | Applied |
+| WS query-token rejected; auth handshake | Pass |
+| No silent identity regeneration | Pass |
+| iOS | **Outstanding / unwaived** |
+| GitHub Actions | Workflow added; not yet run remotely |
 
-## C2 deliverables
+## Logout / history policy (C3)
 
-- Secure `DeviceCryptoStore` / `MlsSessionManager`
-- Go MLS identity + key-package API (`000006` migration)
-- Conversation MLS group mapping + content-type gates
-- Flutter encrypted conversation screen (no `openmls` in UI)
-- WebSocket realtime hints (`/realtime/ws`)
-- Reports: `docs/E2EE_C2_REPORT.md`, contracts updated
+Logout wipes MLS keys from secure storage. Local encrypted DB ciphertext may remain but cannot be decrypted. Re-enrollment creates a new identity — **prior history is not recoverable**. See `docs/E2EE_C3_REPORT.md`.
 
-## Remaining before Milestone C complete
+## Next
 
-See `docs/E2EE_C2_REPORT.md` blockers (E2E harness, Postgres migration verification, iOS, SCA, rate limits, safety-number UX, product sign-off).
-
-**Stop for review before Milestone D.**
+Review C3 → decide iOS waiver vs macOS run → commit/push C3 → only then Milestone D.

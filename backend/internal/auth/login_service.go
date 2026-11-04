@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -207,6 +208,30 @@ func (s *LoginService) VerifyAndLogin(
 	`, userID, now)
 	if err != nil {
 		return LoginResult{}, fmt.Errorf("revoke old sessions: %w", err)
+	}
+
+	// Device replacement: revoke prior MLS identities and consume leftover packages
+	// so stale devices cannot continue authenticated messaging after re-login.
+	_, err = tx.Exec(ctx, `
+		UPDATE device_mls_identities
+		SET revoked_at = $2, updated_at = $2
+		WHERE user_id = $1
+		  AND revoked_at IS NULL
+		  AND device_id <> $3
+	`, userID, now, deviceID)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if !(errors.As(err, &pgErr) && pgErr.Code == "42P01") {
+			return LoginResult{}, fmt.Errorf("revoke prior mls identities: %w", err)
+		}
+	} else {
+		_, _ = tx.Exec(ctx, `
+			UPDATE mls_key_packages
+			SET consumed_at = COALESCE(consumed_at, $2)
+			WHERE user_id = $1
+			  AND device_id <> $3
+			  AND consumed_at IS NULL
+		`, userID, now, deviceID)
 	}
 
 	if s.beforeSessionInsert != nil {

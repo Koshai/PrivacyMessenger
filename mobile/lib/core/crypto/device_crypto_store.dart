@@ -7,15 +7,18 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'openmls/openmls_encryption_service.dart';
 import 'protocol_messages.dart';
 
-/// Policies for identity lifecycle (C2).
+/// Policies for identity lifecycle (C3).
 ///
 /// - **Logout:** wipe local MLS identity + DB key from secure storage. The
-///   MLS SQLCipher file may remain encrypted and unreadable without the key.
+///   encrypted MLS DB file may remain on disk but is unreadable without the
+///   key. Message history is therefore **not** decryptable after logout until
+///   an explicit re-enrollment (which creates a new identity — old ciphertext
+///   cannot be read). See `docs/E2EE_C3_REPORT.md`.
 /// - **Device replacement:** a new authenticated [deviceId] must not reuse
-///   another device's stored material — [loadOrCreate] fails closed on mismatch.
-/// - **Key loss:** if secure storage is empty/corrupt, do **not** silently
-///   generate a replacement identity for an existing account binding; surface
-///   [CryptoKeyLossException] so the UI can require explicit re-enrollment.
+///   another device's stored material.
+/// - **Key loss / corruption:** if an enrollment marker exists, missing or
+///   corrupted material throws [CryptoKeyLossException] and **never** silently
+///   regenerates keys.
 class CryptoKeyLossException implements Exception {
   final String message;
   const CryptoKeyLossException(this.message);
@@ -32,7 +35,7 @@ class DeviceIdentityMismatchException implements Exception {
   String toString() => 'DeviceIdentityMismatchException: $message';
 }
 
-/// Persisted MLS device binding (no private key material in [toString]/
+/// Persisted MLS device binding (no private key material in [toString]).
 class PersistedDeviceCrypto {
   final String userId;
   final String deviceId;
@@ -67,6 +70,7 @@ class PersistedDeviceCrypto {
 /// Production store for MLS identity + SQLCipher DB key.
 class DeviceCryptoStore {
   static const _storageKeyPrefix = 'device_crypto_v1';
+  static const _enrolledPrefix = 'device_crypto_enrolled_v1';
 
   final FlutterSecureStorage _storage;
 
@@ -79,13 +83,24 @@ class DeviceCryptoStore {
   String _keyFor(String userId, String deviceId) =>
       '${_storageKeyPrefix}_${userId}_$deviceId';
 
+  String _enrolledKey(String userId, String deviceId) =>
+      '${_enrolledPrefix}_${userId}_$deviceId';
+
   static String fingerprintOf(List<int> publicKey) =>
       sha256.convert(publicKey).toString();
 
+  Future<bool> wasEverEnrolled({
+    required String userId,
+    required String deviceId,
+  }) async {
+    final marker = await _storage.read(key: _enrolledKey(userId, deviceId));
+    return marker == '1';
+  }
+
   /// Loads existing material or creates once for this user/device binding.
   ///
-  /// Never regenerates when a record exists. Never invents keys after
-  /// [expectExisting] is true (key-loss / restart path).
+  /// If an enrollment marker exists and material is missing/corrupt, throws
+  /// [CryptoKeyLossException] instead of regenerating.
   Future<PersistedDeviceCrypto> loadOrCreate({
     required String userId,
     required String deviceId,
@@ -94,19 +109,23 @@ class DeviceCryptoStore {
     required Future<Uint8List> Function() createDatabaseKey,
     bool expectExisting = false,
   }) async {
+    final enrolled = await wasEverEnrolled(userId: userId, deviceId: deviceId);
     final existing = await read(userId: userId, deviceId: deviceId);
+
     if (existing != null) {
       if (existing.userId != userId || existing.deviceId != deviceId) {
         throw const DeviceIdentityMismatchException(
           'Stored crypto binding does not match authenticated session',
         );
       }
+      await _markEnrolled(userId: userId, deviceId: deviceId);
       return existing;
     }
 
-    if (expectExisting) {
+    if (expectExisting || enrolled) {
       throw const CryptoKeyLossException(
-        'MLS identity missing after restart; refusing silent regeneration',
+        'MLS identity missing or corrupted after enrollment; '
+        'refusing silent regeneration',
       );
     }
 
@@ -122,7 +141,28 @@ class DeviceCryptoStore {
       fingerprintHex: fingerprintOf(identity.publicKey),
     );
     await _write(record);
+    await _markEnrolled(userId: userId, deviceId: deviceId);
     return record;
+  }
+
+  /// Explicit re-enrollment after key loss (user-confirmed). Clears markers
+  /// then creates fresh material.
+  Future<PersistedDeviceCrypto> forceReenroll({
+    required String userId,
+    required String deviceId,
+    required String identityLabel,
+    required Future<DeviceIdentityRecord> Function() createIdentity,
+    required Future<Uint8List> Function() createDatabaseKey,
+  }) async {
+    await clear(userId: userId, deviceId: deviceId);
+    await _storage.delete(key: _enrolledKey(userId, deviceId));
+    return loadOrCreate(
+      userId: userId,
+      deviceId: deviceId,
+      identityLabel: identityLabel,
+      createIdentity: createIdentity,
+      createDatabaseKey: createDatabaseKey,
+    );
   }
 
   Future<PersistedDeviceCrypto?> read({
@@ -139,10 +179,14 @@ class DeviceCryptoStore {
       }
       return _fromJson(decoded);
     } on FormatException {
-      await clear(userId: userId, deviceId: deviceId);
+      await _storage.delete(key: _keyFor(userId, deviceId));
+      // Keep enrollment marker so loadOrCreate cannot silently regenerate.
       return null;
     } on ArgumentError {
-      await clear(userId: userId, deviceId: deviceId);
+      await _storage.delete(key: _keyFor(userId, deviceId));
+      return null;
+    } on TypeError {
+      await _storage.delete(key: _keyFor(userId, deviceId));
       return null;
     }
   }
@@ -151,12 +195,22 @@ class DeviceCryptoStore {
     await _storage.delete(key: _keyFor(userId, deviceId));
   }
 
-  /// Logout policy: erase crypto for this device binding.
+  /// Logout: erase crypto keys. Enrollment marker is cleared so a future login
+  /// on the same device id can enroll again only after a new auth session.
   Future<void> clearOnLogout({
     required String userId,
     required String deviceId,
-  }) =>
-      clear(userId: userId, deviceId: deviceId);
+  }) async {
+    await clear(userId: userId, deviceId: deviceId);
+    await _storage.delete(key: _enrolledKey(userId, deviceId));
+  }
+
+  Future<void> _markEnrolled({
+    required String userId,
+    required String deviceId,
+  }) async {
+    await _storage.write(key: _enrolledKey(userId, deviceId), value: '1');
+  }
 
   Future<void> _write(PersistedDeviceCrypto record) async {
     final payload = jsonEncode({
@@ -168,7 +222,10 @@ class DeviceCryptoStore {
       'db_key_b64': base64Encode(record.databaseEncryptionKey),
       'fingerprint_hex': record.fingerprintHex,
     });
-    await _storage.write(key: _keyFor(record.userId, record.deviceId), value: payload);
+    await _storage.write(
+      key: _keyFor(record.userId, record.deviceId),
+      value: payload,
+    );
   }
 
   PersistedDeviceCrypto _fromJson(Map<String, dynamic> json) {
@@ -178,10 +235,16 @@ class DeviceCryptoStore {
     if (dbKey.length != 32 || dbKey.every((b) => b == 0)) {
       throw ArgumentError('invalid db key');
     }
+    if (publicKey.isEmpty || signer.isEmpty) {
+      throw ArgumentError('invalid identity material');
+    }
     final userId = json['user_id'] as String;
     final deviceId = json['device_id'] as String;
     final label = json['identity_label'] as String;
     final fp = json['fingerprint_hex'] as String? ?? fingerprintOf(publicKey);
+    if (fp != fingerprintOf(publicKey)) {
+      throw ArgumentError('fingerprint mismatch');
+    }
     return PersistedDeviceCrypto(
       userId: userId,
       deviceId: deviceId,
@@ -216,7 +279,11 @@ class DeviceCryptoSession {
     );
     await service.openEngine();
     await service.adoptIdentity(record.identity);
-    return DeviceCryptoSession(record: record, service: service, dbPath: dbPath);
+    return DeviceCryptoSession(
+      record: record,
+      service: service,
+      dbPath: dbPath,
+    );
   }
 
   Future<void> close() => service.persistAndClose();

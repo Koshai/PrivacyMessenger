@@ -12,14 +12,24 @@ type SessionRevoker interface {
 	Revoke(ctx context.Context, token string) error
 }
 
+type SessionDisconnecter interface {
+	DisconnectToken(token string, reason string)
+}
+
 type LogoutHandler struct {
-	revoker SessionRevoker
+	revoker      SessionRevoker
+	disconnecter SessionDisconnecter
 }
 
 func NewLogoutHandler(
 	revoker SessionRevoker,
 ) *LogoutHandler {
 	return &LogoutHandler{revoker: revoker}
+}
+
+func (h *LogoutHandler) WithDisconnecter(d SessionDisconnecter) *LogoutHandler {
+	h.disconnecter = d
+	return h
 }
 
 func (h *LogoutHandler) Logout(
@@ -72,6 +82,10 @@ func (h *LogoutHandler) Logout(
 			http.StatusInternalServerError,
 		)
 		return
+	}
+
+	if h.disconnecter != nil {
+		h.disconnecter.DisconnectToken(token, "logout")
 	}
 
 	w.Header().Set("Cache-Control", "no-store")

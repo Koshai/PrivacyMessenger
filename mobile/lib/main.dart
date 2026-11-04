@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'core/auth/auth_controller.dart';
 import 'core/auth/auth_state.dart';
 import 'core/auth/secure_session_store.dart';
+import 'core/crypto/license_notices.dart';
 import 'core/crypto/mls_session_manager.dart';
 import 'core/network/api_client.dart';
 import 'core/network/api_config.dart';
@@ -15,6 +16,7 @@ import 'features/settings/settings_screen.dart';
 import 'features/auth/auth_flow.dart';
 
 void main() {
+  registerCryptoLicenseNotices();
   runApp(const PrivateMessengerApp());
 }
 

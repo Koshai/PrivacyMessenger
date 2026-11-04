@@ -19,6 +19,7 @@ class EncryptedConversationService {
 
   final Map<String, String> _groupByConversation = {};
   final Map<String, String> _knownFingerprints = {};
+  final Map<String, String> _peerByConversation = {};
   final Set<String> _processedEnvelopeIds = {};
 
   String? keyChangeWarning;
@@ -146,6 +147,10 @@ class EncryptedConversationService {
     }
   }
 
+  void bindConversationPeer(String conversationId, String peerUserId) {
+    _peerByConversation[conversationId] = peerUserId;
+  }
+
   Future<List<ChatMessageView>> ingestEnvelopes({
     required String token,
     required String myUserId,
@@ -154,61 +159,91 @@ class EncryptedConversationService {
     final svc = mls.service;
     if (svc == null) throw StateError('MLS not ready');
 
-    final sorted = [...envelopes]
-      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    final sorted = [...envelopes]..sort(compareEnvelopesForProcessing);
     final out = <ChatMessageView>[];
+    final deferred = <MessageEnvelope>[];
 
-    for (final env in sorted) {
-      if (_processedEnvelopeIds.contains(env.id)) continue;
-      if (env.senderId == myUserId &&
-          env.contentType == MlsContentTypes.application) {
-        // Own application messages are already shown from send path.
-        _processedEnvelopeIds.add(env.id);
-        continue;
+    Future<void> processOne(MessageEnvelope env) async {
+      if (_processedEnvelopeIds.contains(env.id)) return;
+
+      if (!_isAuthorizedSender(env, myUserId)) {
+        // Do not decrypt or display — membership/sender check failed.
+        return;
       }
 
-      try {
-        if (env.contentType == MlsContentTypes.welcome) {
-          final groupId =
-              await svc.joinFromWelcome(welcomeBytes: env.ciphertext);
-          _groupByConversation[env.conversationId] = groupId;
-          await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
-          _processedEnvelopeIds.add(env.id);
-          continue;
-        }
+      if (env.senderId == myUserId &&
+          env.contentType == MlsContentTypes.application) {
+        _processedEnvelopeIds.add(env.id);
+        return;
+      }
 
-        var groupId = _groupByConversation[env.conversationId];
-        if (groupId == null) {
-          continue;
-        }
-
-        final decrypted = await svc.processIncoming(
-          groupIdHex: groupId,
-          messageBytes: env.ciphertext,
-        );
+      if (env.contentType == MlsContentTypes.welcome) {
+        final groupId =
+            await svc.joinFromWelcome(welcomeBytes: env.ciphertext);
+        _groupByConversation[env.conversationId] = groupId;
         await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
         _processedEnvelopeIds.add(env.id);
+        return;
+      }
 
-        if (env.contentType == MlsContentTypes.application &&
-            decrypted != null) {
-          out.add(
-            ChatMessageView(
-              clientMessageId: env.clientMessageId,
-              serverEnvelopeId: env.id,
-              senderId: env.senderId,
-              plaintext: utf8.decode(decrypted.plaintext),
-              createdAt: env.createdAt,
-              delivery: ChatDeliveryState.sent,
-              isMine: env.senderId == myUserId,
-            ),
-          );
-        }
+      final groupId = _groupByConversation[env.conversationId];
+      if (groupId == null) {
+        deferred.add(env);
+        return;
+      }
+
+      final decrypted = await svc.processIncoming(
+        groupIdHex: groupId,
+        messageBytes: env.ciphertext,
+      );
+      await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
+      _processedEnvelopeIds.add(env.id);
+
+      if (env.contentType == MlsContentTypes.application && decrypted != null) {
+        out.add(
+          ChatMessageView(
+            clientMessageId: env.clientMessageId,
+            serverEnvelopeId: env.id,
+            senderId: env.senderId,
+            plaintext: utf8.decode(decrypted.plaintext),
+            createdAt: env.createdAt,
+            delivery: ChatDeliveryState.sent,
+            isMine: env.senderId == myUserId,
+          ),
+        );
+      }
+    }
+
+    for (final env in sorted) {
+      try {
+        await processOne(env);
       } catch (_) {
         keyChangeWarning =
             'A message could not be decrypted. Verify your contact\'s safety number.';
       }
     }
+
+    // After Welcome, retry envelopes that arrived before local join.
+    if (deferred.isNotEmpty) {
+      deferred.sort(compareEnvelopesForProcessing);
+      for (final env in deferred) {
+        try {
+          await processOne(env);
+        } catch (_) {
+          keyChangeWarning =
+              'A message could not be decrypted. Verify your contact\'s safety number.';
+        }
+      }
+    }
     return out;
+  }
+
+  bool _isAuthorizedSender(MessageEnvelope env, String myUserId) {
+    if (env.senderId == myUserId) return true;
+    final peer = _peerByConversation[env.conversationId];
+    if (peer != null) return env.senderId == peer;
+    // Unknown conversation binding — refuse display until peer is bound.
+    return false;
   }
 
   void _trackFingerprint(String peerUserId, String fingerprint) {

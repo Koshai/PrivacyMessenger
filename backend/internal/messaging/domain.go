@@ -27,6 +27,9 @@ type Envelope struct {
 	Ciphertext      []byte
 	ContentType     string
 	CreatedAt       time.Time
+	// ConversationSeq is allocated in the same DB transaction as the insert
+	// (durable per-conversation order; not wall-clock and not a global sequence).
+	ConversationSeq int64
 }
 
 type Conversation struct {

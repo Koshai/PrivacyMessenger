@@ -5,6 +5,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 /// Authenticated WebSocket client with reconnect + backoff.
 ///
+/// Auth uses a post-connect handshake frame (never query-string tokens).
 /// Events are hints only — durable sync uses HTTP pending endpoints.
 class RealtimeClient {
   RealtimeClient({required this.wsBaseUri});
@@ -20,6 +21,9 @@ class RealtimeClient {
   final _events = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get events => _events.stream;
 
+  final _revoked = StreamController<void>.broadcast();
+  Stream<void> get sessionRevoked => _revoked.stream;
+
   Future<void> start(String token) async {
     _stopped = false;
     _token = token;
@@ -28,6 +32,7 @@ class RealtimeClient {
 
   Future<void> stop() async {
     _stopped = true;
+    _token = null;
     _reconnect?.cancel();
     await _sub?.cancel();
     await _channel?.sink.close();
@@ -37,26 +42,26 @@ class RealtimeClient {
   Future<void> _connect() async {
     if (_stopped || _token == null) return;
     try {
-      final uri = wsBaseUri.replace(
-        queryParameters: {'access_token': _token},
-      );
-      // Prefer Authorization via headers when available; fallback query for tools.
-      _channel = WebSocketChannel.connect(
-        uri,
-        protocols: const [],
-      );
-      // Send token as first message if server expects header-only auth via HTTP
-      // upgrade — our server uses Authorization on the handshake; browsers need
-      // a custom approach. For mobile http client we pass via Sec header by
-      // using a custom connect — coder path uses Bearer on HTTP upgrade.
+      // No access_token in the URL (C3).
+      final uri = wsBaseUri.replace(queryParameters: {});
+      _channel = WebSocketChannel.connect(uri);
+      _channel!.sink.add(jsonEncode({
+        'type': 'auth',
+        'token': _token,
+      }));
+
       _sub = _channel!.stream.listen(
         (raw) {
           if (raw is! String) return;
           final decoded = jsonDecode(raw);
-          if (decoded is Map<String, dynamic>) {
-            _events.add(decoded);
-            _attempt = 0;
+          if (decoded is! Map<String, dynamic>) return;
+          if (decoded['type'] == 'session_revoked') {
+            _revoked.add(null);
+            stop();
+            return;
           }
+          _events.add(decoded);
+          _attempt = 0;
         },
         onDone: _scheduleReconnect,
         onError: (_) => _scheduleReconnect(),
@@ -68,9 +73,10 @@ class RealtimeClient {
   }
 
   void _scheduleReconnect() {
-    if (_stopped) return;
+    if (_stopped || _token == null) return;
     _reconnect?.cancel();
-    final delay = Duration(milliseconds: (500 * (1 << _attempt.clamp(0, 5))).toInt());
+    final delay =
+        Duration(milliseconds: (500 * (1 << _attempt.clamp(0, 5))).toInt());
     _attempt++;
     _reconnect = Timer(delay, () {
       _connect();
@@ -80,5 +86,6 @@ class RealtimeClient {
   Future<void> dispose() async {
     await stop();
     await _events.close();
+    await _revoked.close();
   }
 }

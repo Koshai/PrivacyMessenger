@@ -22,6 +22,7 @@ type Service struct {
 	store      Store
 	friendship FriendshipChecker
 	devices    DeviceOwnerChecker
+	limiter    *RateLimiter
 	now        func() time.Time
 }
 
@@ -30,8 +31,16 @@ func NewService(store Store, friendship FriendshipChecker, devices DeviceOwnerCh
 		store:      store,
 		friendship: friendship,
 		devices:    devices,
+		limiter:    NewRateLimiter(60, time.Minute),
 		now:        func() time.Time { return time.Now().UTC() },
 	}
+}
+
+func (s *Service) allow(userID uuid.UUID) error {
+	if s.limiter != nil && !s.limiter.Allow(userID) {
+		return ErrRateLimited
+	}
+	return nil
 }
 
 func (s *Service) RegisterIdentity(
@@ -39,6 +48,9 @@ func (s *Service) RegisterIdentity(
 	actorUserID, actorDeviceID uuid.UUID,
 	publicKey []byte,
 ) (DeviceIdentity, bool, error) {
+	if err := s.allow(actorUserID); err != nil {
+		return DeviceIdentity{}, false, err
+	}
 	if actorUserID == uuid.Nil || actorDeviceID == uuid.Nil {
 		return DeviceIdentity{}, false, ErrInvalidInput
 	}
@@ -89,6 +101,9 @@ func (s *Service) UploadKeyPackages(
 	packages [][]byte,
 	ttl time.Duration,
 ) error {
+	if err := s.allow(actorUserID); err != nil {
+		return err
+	}
 	if actorUserID == uuid.Nil || actorDeviceID == uuid.Nil {
 		return ErrInvalidInput
 	}
@@ -144,6 +159,9 @@ func (s *Service) ClaimKeyPackage(
 	ctx context.Context,
 	actorUserID, peerUserID uuid.UUID,
 ) (KeyPackage, DeviceIdentity, error) {
+	if err := s.allow(actorUserID); err != nil {
+		return KeyPackage{}, DeviceIdentity{}, err
+	}
 	if actorUserID == uuid.Nil || peerUserID == uuid.Nil || actorUserID == peerUserID {
 		return KeyPackage{}, DeviceIdentity{}, ErrInvalidInput
 	}
