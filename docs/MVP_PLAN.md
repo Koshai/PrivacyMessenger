@@ -33,11 +33,14 @@
 
 ## Milestone C — End-to-end encrypted messaging
 
-**Goal:** Evaluate maintained E2EE (prefer Signal Protocol bindings if license/platform fit). Document choice before integration. Encrypted envelopes only on server; real-time transport after persistence contracts.
+**Goal:** Proprietary-compatible E2EE using pinned MIT `openmls` 3.3.0 behind `EncryptionService`. Opaque envelopes on server; secure device crypto store; key packages; MLS delivery; 1:1 encrypted chat; WebSocket sync hints.
 
-**Acceptance:** charter crypto/message tests; never claim Signal/FS/PCS properties the library does not provide and test. Block and report if no trustworthy implementation can be integrated.
+**Acceptance:** charter crypto/message tests; never claim properties the library does not provide and test. No AGPL/GPL deps without approval.
 
-**Status:** Evaluation written in `docs/E2EE_EVALUATION.md`. Provisional candidate is pub.dev `libsignal` (AGPL-3.0 + upstream Signal AGPL). **Do not integrate until AGPL is accepted or an alternative is chosen.**
+**Status:**
+- **C1** (committed `e594b14`): dependency review + isolated OpenMLS PoC + native tests.
+- **C2** (local/uncommitted for review): DeviceCryptoStore, key-package API, MLS group mapping, chat UI, WebSocket — see `docs/E2EE_C2_REPORT.md`.
+- **Milestone C not complete** until E2E, iOS, migration/integration gates, and blockers in the C2 report are closed.
 
 ## Milestone D — One-to-one audio/video calls
 

@@ -12,6 +12,7 @@ func RegisterMessagingRoutes(
 	}
 
 	mux.Handle("POST /conversations", protect(handler.OpenConversation))
+	mux.Handle("PUT /conversations/{conversationID}/mls-group", protect(handler.EstablishMlsGroup))
 	mux.Handle("POST /conversations/{conversationID}/envelopes", protect(handler.SendEnvelope))
 	mux.Handle("GET /conversations/{conversationID}/envelopes", protect(handler.ListHistory))
 	mux.Handle("POST /envelopes/{envelopeID}/ack", protect(handler.Acknowledge))

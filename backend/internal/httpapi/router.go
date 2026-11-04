@@ -14,6 +14,8 @@ type RouterDependencies struct {
 	LogoutHandler        *LogoutHandler
 	FriendsHandler       *FriendsHandler
 	MessagingHandler     *MessagingHandler
+	CryptoHandler        *CryptoHandler
+	RealtimeHandler      *RealtimeHandler
 }
 
 // NewConfiguredRouter is the central router factory.
@@ -82,6 +84,22 @@ func NewConfiguredRouter(
 				mux,
 				deps.SessionAuthenticator,
 				deps.MessagingHandler,
+			)
+		}
+
+		if deps.CryptoHandler != nil {
+			RegisterCryptoRoutes(
+				mux,
+				deps.SessionAuthenticator,
+				deps.CryptoHandler,
+			)
+		}
+
+		if deps.RealtimeHandler != nil {
+			RegisterRealtimeRoutes(
+				mux,
+				deps.SessionAuthenticator,
+				deps.RealtimeHandler,
 			)
 		}
 	}

@@ -149,7 +149,11 @@ class AuthController extends ChangeNotifier {
       }
 
       _update(
-        AuthState(status: AuthStatus.authenticated, userId: identity.userId),
+        AuthState(
+          status: AuthStatus.authenticated,
+          userId: identity.userId,
+          deviceId: identity.deviceId,
+        ),
       );
     } on ApiException catch (e) {
       if (!_isCurrent(generation)) return;

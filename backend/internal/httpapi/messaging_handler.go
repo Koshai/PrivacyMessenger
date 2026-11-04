@@ -17,6 +17,7 @@ import (
 
 type MessagingService interface {
 	OpenConversation(ctx context.Context, actorID, peerID uuid.UUID) (messaging.Conversation, error)
+	EstablishMlsGroup(ctx context.Context, actorID, conversationID uuid.UUID, groupIDHex string) (messaging.Conversation, error)
 	SendEnvelope(ctx context.Context, actorID, conversationID uuid.UUID, clientMessageID string, ciphertext []byte, contentType string) (messaging.SendResult, error)
 	ListHistory(ctx context.Context, actorID, conversationID uuid.UUID, before *messaging.PageCursor, limit int) ([]messaging.Envelope, error)
 	Acknowledge(ctx context.Context, actorID, envelopeID uuid.UUID) error
@@ -64,10 +65,34 @@ func (h *MessagingHandler) OpenConversation(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"conversation_id": conversation.ID.String(),
-		"created_at":      conversation.CreatedAt.UTC(),
-	})
+	writeJSON(w, http.StatusOK, mapConversation(conversation))
+}
+
+func (h *MessagingHandler) EstablishMlsGroup(w http.ResponseWriter, r *http.Request) {
+	session, ok := SessionFromContext(r.Context())
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	conversationID, err := uuid.Parse(r.PathValue("conversationID"))
+	if err != nil {
+		http.Error(w, "invalid conversation id", http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		MlsGroupIDHex string `json:"mls_group_id_hex"`
+	}
+	if !decodeExactJSON(w, r, &body) {
+		return
+	}
+	conversation, err := h.service.EstablishMlsGroup(
+		r.Context(), session.UserID, conversationID, body.MlsGroupIDHex,
+	)
+	if err != nil {
+		writeMessagingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, mapConversation(conversation))
 }
 
 func (h *MessagingHandler) SendEnvelope(w http.ResponseWriter, r *http.Request) {
@@ -193,6 +218,23 @@ func (h *MessagingHandler) SyncPending(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"envelopes": payload})
 }
 
+func mapConversation(c messaging.Conversation) map[string]any {
+	out := map[string]any{
+		"conversation_id": c.ID.String(),
+		"created_at":      c.CreatedAt.UTC(),
+	}
+	if c.MlsGroupIDHex != nil {
+		out["mls_group_id_hex"] = *c.MlsGroupIDHex
+	}
+	if c.MlsInitiatorID != nil {
+		out["mls_initiator_id"] = c.MlsInitiatorID.String()
+	}
+	if c.MlsEstablishedAt != nil {
+		out["mls_established_at"] = c.MlsEstablishedAt.UTC()
+	}
+	return out
+}
+
 func mapEnvelope(e messaging.Envelope) map[string]any {
 	return map[string]any{
 		"id":                e.ID.String(),
@@ -230,6 +272,11 @@ func writeMessagingError(w http.ResponseWriter, err error) {
 	case errors.Is(err, messaging.ErrConversationMissing),
 		errors.Is(err, messaging.ErrEnvelopeMissing):
 		http.Error(w, err.Error(), http.StatusNotFound)
+	case errors.Is(err, messaging.ErrMlsNotEstablished):
+		http.Error(w, err.Error(), http.StatusConflict)
+	case errors.Is(err, messaging.ErrMlsAlreadySet),
+		errors.Is(err, messaging.ErrMlsGroupMismatch):
+		http.Error(w, err.Error(), http.StatusConflict)
 	default:
 		http.Error(w, "messaging operation failed", http.StatusInternalServerError)
 	}

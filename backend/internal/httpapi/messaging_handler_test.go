@@ -26,6 +26,9 @@ type fakeMessagingService struct {
 func (f *fakeMessagingService) OpenConversation(context.Context, uuid.UUID, uuid.UUID) (messaging.Conversation, error) {
 	return messaging.Conversation{ID: uuid.New(), CreatedAt: time.Now().UTC()}, nil
 }
+func (f *fakeMessagingService) EstablishMlsGroup(context.Context, uuid.UUID, uuid.UUID, string) (messaging.Conversation, error) {
+	return messaging.Conversation{ID: uuid.New(), CreatedAt: time.Now().UTC()}, nil
+}
 func (f *fakeMessagingService) SendEnvelope(context.Context, uuid.UUID, uuid.UUID, string, []byte, string) (messaging.SendResult, error) {
 	return f.sendResult, f.sendErr
 }

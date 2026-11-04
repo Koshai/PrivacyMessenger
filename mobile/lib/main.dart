@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'core/auth/auth_controller.dart';
 import 'core/auth/auth_state.dart';
 import 'core/auth/secure_session_store.dart';
+import 'core/crypto/mls_session_manager.dart';
 import 'core/network/api_client.dart';
 import 'core/network/api_config.dart';
 import 'core/theme/app_theme.dart';
@@ -28,6 +29,7 @@ class _PrivateMessengerAppState extends State<PrivateMessengerApp> {
   late final http.Client _httpClient;
   late final ApiClient _apiClient;
   late final AuthController _authController;
+  late final MlsSessionManager _mls;
 
   @override
   void initState() {
@@ -36,6 +38,7 @@ class _PrivateMessengerAppState extends State<PrivateMessengerApp> {
     _httpClient = http.Client();
 
     _apiClient = ApiClient(client: _httpClient, baseUri: ApiConfig.baseUri);
+    _mls = MlsSessionManager();
 
     _authController = AuthController(
       store: SecureSessionStore(),
@@ -48,6 +51,7 @@ class _PrivateMessengerAppState extends State<PrivateMessengerApp> {
 
   @override
   void dispose() {
+    _mls.close();
     _authController.dispose();
     _httpClient.close();
     super.dispose();
@@ -72,9 +76,17 @@ class _PrivateMessengerAppState extends State<PrivateMessengerApp> {
 
           case AuthStatus.authenticated:
             home = MainNavigation(
-              onLogout: _authController.signOut,
+              onLogout: () async {
+                final userId = _authController.state.userId;
+                final deviceId = _authController.state.deviceId;
+                if (userId != null && deviceId != null) {
+                  await _mls.clearOnLogout(userId: userId, deviceId: deviceId);
+                }
+                await _authController.signOut();
+              },
               apiClient: _apiClient,
               authController: _authController,
+              mls: _mls,
             );
             break;
 
@@ -113,12 +125,14 @@ class MainNavigation extends StatefulWidget {
   final Future<void> Function()? onLogout;
   final ApiClient? apiClient;
   final AuthController? authController;
+  final MlsSessionManager? mls;
 
   const MainNavigation({
     super.key,
     this.onLogout,
     this.apiClient,
     this.authController,
+    this.mls,
   });
 
   @override
@@ -132,7 +146,11 @@ class _MainNavigationState extends State<MainNavigation> {
   Widget build(BuildContext context) {
     // Create screens here so widget.onLogout is accessible.
     final screens = [
-      const ChatsScreen(),
+      ChatsScreen(
+        apiClient: widget.apiClient,
+        authController: widget.authController,
+        mls: widget.mls,
+      ),
       FriendsScreen(
         apiClient: widget.apiClient,
         authController: widget.authController,

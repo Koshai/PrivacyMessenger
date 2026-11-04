@@ -54,10 +54,30 @@ func (m *memoryStore) GetOrCreateConversation(_ context.Context, userA, userB uu
 }
 
 func (m *memoryStore) GetConversation(_ context.Context, conversationID uuid.UUID) (Conversation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	c, ok := m.conversations[conversationID]
 	if !ok {
 		return Conversation{}, ErrConversationMissing
 	}
+	return c, nil
+}
+
+func (m *memoryStore) SetMlsGroup(_ context.Context, conversationID, initiatorID uuid.UUID, groupIDHex string) (Conversation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.conversations[conversationID]
+	if !ok {
+		return Conversation{}, ErrConversationMissing
+	}
+	if c.MlsGroupIDHex != nil {
+		return Conversation{}, ErrMlsAlreadySet
+	}
+	now := time.Now().UTC()
+	c.MlsGroupIDHex = &groupIDHex
+	c.MlsInitiatorID = &initiatorID
+	c.MlsEstablishedAt = &now
+	m.conversations[conversationID] = c
 	return c, nil
 }
 
@@ -208,5 +228,30 @@ func TestRejectsEmptyCiphertext(t *testing.T) {
 	_, err = service.SendEnvelope(context.Background(), alice, conversation.ID, "msg", nil, "application/opaque")
 	if err != ErrInvalidInput {
 		t.Fatalf("expected invalid input, got %v", err)
+	}
+}
+
+func TestApplicationMessageRequiresMlsGroup(t *testing.T) {
+	alice, bob := uuid.New(), uuid.New()
+	friends := &memoryFriends{pairs: map[[2]uuid.UUID]bool{{alice, bob}: true}}
+	store := newMemoryStore()
+	svc := NewService(store, friends)
+	conv, err := svc.OpenConversation(context.Background(), alice, bob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.SendEnvelope(
+		context.Background(), alice, conv.ID, "m1", []byte{1}, ContentTypeMLSMessage,
+	)
+	if err != ErrMlsNotEstablished {
+		t.Fatalf("want ErrMlsNotEstablished, got %v", err)
+	}
+	if _, err := svc.EstablishMlsGroup(context.Background(), alice, conv.ID, "abcd"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SendEnvelope(
+		context.Background(), alice, conv.ID, "m2", []byte{1}, ContentTypeMLSMessage,
+	); err != nil {
+		t.Fatal(err)
 	}
 }

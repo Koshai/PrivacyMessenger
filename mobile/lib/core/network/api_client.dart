@@ -7,6 +7,7 @@ import '../../features/auth/models/otp_challenge.dart';
 import '../../features/auth/models/auth_session.dart';
 import '../../features/auth/models/auth_identity.dart';
 import '../../features/friends/models/friend.dart';
+import '../../features/messaging/models/envelope.dart';
 
 enum ApiErrorKind {
   unauthorized,
@@ -621,5 +622,262 @@ class ApiClient {
         .whereType<Map<String, dynamic>>()
         .map(BlockedUser.fromJson)
         .toList();
+  }
+
+  // --- Crypto / MLS key packages ---
+
+  Future<String> registerMlsIdentity({
+    required String token,
+    required List<int> publicKey,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.post(
+        baseUri.resolve('/crypto/identity'),
+        headers: _authHeaders(token),
+        body: jsonEncode({'public_key_b64': base64Encode(publicKey)}),
+      ),
+    );
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      _ensureFriendsSuccess(response, ok: {200, 201});
+    }
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    return decoded['fingerprint_hex'] as String;
+  }
+
+  Future<void> uploadKeyPackages({
+    required String token,
+    required List<List<int>> packages,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.post(
+        baseUri.resolve('/crypto/key-packages'),
+        headers: _authHeaders(token),
+        body: jsonEncode({
+          'packages_b64': packages.map(base64Encode).toList(),
+        }),
+      ),
+    );
+    if (response.statusCode != 204) {
+      throw ApiException(
+        'Key package upload failed',
+        kind: ApiErrorKind.server,
+        statusCode: response.statusCode,
+      );
+    }
+  }
+
+  Future<({List<int> keyPackage, String fingerprintHex, String publicKeyB64, String deviceId})>
+      claimKeyPackage({
+    required String token,
+    required String peerUserId,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.post(
+        baseUri.resolve('/crypto/users/$peerUserId/key-packages/claim'),
+        headers: _authHeaders(token),
+      ),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(
+        'Claim key package failed',
+        kind: ApiErrorKind.server,
+        statusCode: response.statusCode,
+      );
+    }
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    return (
+      keyPackage: base64Decode(decoded['key_package_b64'] as String),
+      fingerprintHex: decoded['fingerprint_hex'] as String,
+      publicKeyB64: decoded['public_key_b64'] as String,
+      deviceId: decoded['device_id'] as String,
+    );
+  }
+
+  Future<List<({String deviceId, String fingerprintHex})>> peerIdentities({
+    required String token,
+    required String peerUserId,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.get(
+        baseUri.resolve('/crypto/users/$peerUserId/identities'),
+        headers: _authHeaders(token),
+      ),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(
+        'Peer identities failed',
+        kind: ApiErrorKind.server,
+        statusCode: response.statusCode,
+      );
+    }
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    final list = decoded['identities'] as List? ?? const [];
+    return list.whereType<Map<String, dynamic>>().map((e) {
+      return (
+        deviceId: e['device_id'] as String,
+        fingerprintHex: e['fingerprint_hex'] as String,
+      );
+    }).toList();
+  }
+
+  // --- Messaging envelopes ---
+
+  Future<ConversationInfo> openConversation({
+    required String token,
+    required String peerUserId,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.post(
+        baseUri.resolve('/conversations'),
+        headers: _authHeaders(token),
+        body: jsonEncode({'peer_user_id': peerUserId}),
+      ),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(
+        'Open conversation failed',
+        kind: ApiErrorKind.server,
+        statusCode: response.statusCode,
+      );
+    }
+    return ConversationInfo.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<ConversationInfo> establishMlsGroup({
+    required String token,
+    required String conversationId,
+    required String mlsGroupIdHex,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.put(
+        baseUri.resolve('/conversations/$conversationId/mls-group'),
+        headers: _authHeaders(token),
+        body: jsonEncode({'mls_group_id_hex': mlsGroupIdHex}),
+      ),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(
+        'Establish MLS group failed',
+        kind: ApiErrorKind.server,
+        statusCode: response.statusCode,
+      );
+    }
+    return ConversationInfo.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<MessageEnvelope> sendEnvelope({
+    required String token,
+    required String conversationId,
+    required String clientMessageId,
+    required List<int> ciphertext,
+    required String contentType,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.post(
+        baseUri.resolve('/conversations/$conversationId/envelopes'),
+        headers: _authHeaders(token),
+        body: jsonEncode({
+          'client_message_id': clientMessageId,
+          'ciphertext_b64': base64Encode(ciphertext),
+          'content_type': contentType,
+        }),
+      ),
+    );
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      throw ApiException(
+        'Send envelope failed',
+        kind: ApiErrorKind.server,
+        statusCode: response.statusCode,
+      );
+    }
+    return MessageEnvelope.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<List<MessageEnvelope>> listEnvelopes({
+    required String token,
+    required String conversationId,
+    int limit = 50,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.get(
+        baseUri.resolve(
+          '/conversations/$conversationId/envelopes?limit=$limit',
+        ),
+        headers: _authHeaders(token),
+      ),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(
+        'List envelopes failed',
+        kind: ApiErrorKind.server,
+        statusCode: response.statusCode,
+      );
+    }
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    final list = decoded['envelopes'] as List? ?? const [];
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(MessageEnvelope.fromJson)
+        .toList();
+  }
+
+  Future<List<MessageEnvelope>> syncPending({
+    required String token,
+    int limit = 100,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.get(
+        baseUri.resolve('/envelopes/pending?limit=$limit'),
+        headers: _authHeaders(token),
+      ),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException(
+        'Sync pending failed',
+        kind: ApiErrorKind.server,
+        statusCode: response.statusCode,
+      );
+    }
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    final list = decoded['envelopes'] as List? ?? const [];
+    return list
+        .whereType<Map<String, dynamic>>()
+        .map(MessageEnvelope.fromJson)
+        .toList();
+  }
+
+  Future<void> acknowledgeEnvelope({
+    required String token,
+    required String envelopeId,
+  }) async {
+    final response = await _authed(
+      token,
+      () => client.post(
+        baseUri.resolve('/envelopes/$envelopeId/ack'),
+        headers: _authHeaders(token),
+      ),
+    );
+    if (response.statusCode != 204) {
+      throw ApiException(
+        'Ack failed',
+        kind: ApiErrorKind.server,
+        statusCode: response.statusCode,
+      );
+    }
   }
 }

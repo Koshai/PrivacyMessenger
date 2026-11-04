@@ -52,9 +52,9 @@ func (s *Service) SendEnvelope(
 		return SendResult{}, ErrInvalidInput
 	}
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		contentType = ContentTypeOpaque
 	}
-	if len(contentType) > 64 {
+	if len(contentType) > 64 || !IsAllowedContentType(contentType) {
 		return SendResult{}, ErrInvalidInput
 	}
 
@@ -74,6 +74,11 @@ func (s *Service) SendEnvelope(
 	}
 	if !ok {
 		return SendResult{}, ErrNotFriends
+	}
+
+	// Application ciphertext requires an established MLS group mapping.
+	if IsMLSApplication(contentType) && conversation.MlsGroupIDHex == nil {
+		return SendResult{}, ErrMlsNotEstablished
 	}
 
 	envelope := Envelope{
@@ -124,6 +129,31 @@ func (s *Service) SyncPending(
 		return nil, ErrInvalidInput
 	}
 	return s.store.ListPendingForRecipient(ctx, actorID, limit)
+}
+
+// EstablishMlsGroup binds a conversation to an MLS group id (initiator only, once).
+func (s *Service) EstablishMlsGroup(
+	ctx context.Context,
+	actorID, conversationID uuid.UUID,
+	groupIDHex string,
+) (Conversation, error) {
+	if actorID == uuid.Nil || conversationID == uuid.Nil || groupIDHex == "" || len(groupIDHex) > 128 {
+		return Conversation{}, ErrInvalidInput
+	}
+	conversation, err := s.store.GetConversation(ctx, conversationID)
+	if err != nil {
+		return Conversation{}, err
+	}
+	if _, err := peerOf(conversation, actorID); err != nil {
+		return Conversation{}, err
+	}
+	if conversation.MlsGroupIDHex != nil {
+		if *conversation.MlsGroupIDHex == groupIDHex {
+			return conversation, nil
+		}
+		return Conversation{}, ErrMlsAlreadySet
+	}
+	return s.store.SetMlsGroup(ctx, conversationID, actorID, groupIDHex)
 }
 
 func peerOf(c Conversation, actorID uuid.UUID) (uuid.UUID, error) {

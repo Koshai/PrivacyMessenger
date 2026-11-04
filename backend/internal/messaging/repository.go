@@ -37,8 +37,11 @@ func (r *Repository) GetOrCreateConversation(
 		VALUES ($1, $2, $3)
 		ON CONFLICT (user_a, user_b)
 		DO UPDATE SET user_a = EXCLUDED.user_a
-		RETURNING id, user_a, user_b, created_at
-	`, uuid.New(), low, high).Scan(&c.ID, &c.UserA, &c.UserB, &c.CreatedAt)
+		RETURNING id, user_a, user_b, created_at, mls_group_id_hex, mls_initiator_id, mls_established_at
+	`, uuid.New(), low, high).Scan(
+		&c.ID, &c.UserA, &c.UserB, &c.CreatedAt,
+		&c.MlsGroupIDHex, &c.MlsInitiatorID, &c.MlsEstablishedAt,
+	)
 	if err != nil {
 		return Conversation{}, fmt.Errorf("get or create conversation: %w", err)
 	}
@@ -51,15 +54,52 @@ func (r *Repository) GetConversation(
 ) (Conversation, error) {
 	var c Conversation
 	err := r.db.QueryRow(ctx, `
-		SELECT id, user_a, user_b, created_at
+		SELECT id, user_a, user_b, created_at, mls_group_id_hex, mls_initiator_id, mls_established_at
 		FROM conversations
 		WHERE id = $1
-	`, conversationID).Scan(&c.ID, &c.UserA, &c.UserB, &c.CreatedAt)
+	`, conversationID).Scan(
+		&c.ID, &c.UserA, &c.UserB, &c.CreatedAt,
+		&c.MlsGroupIDHex, &c.MlsInitiatorID, &c.MlsEstablishedAt,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Conversation{}, ErrConversationMissing
 	}
 	if err != nil {
 		return Conversation{}, fmt.Errorf("get conversation: %w", err)
+	}
+	return c, nil
+}
+
+func (r *Repository) SetMlsGroup(
+	ctx context.Context,
+	conversationID, initiatorID uuid.UUID,
+	groupIDHex string,
+) (Conversation, error) {
+	var c Conversation
+	err := r.db.QueryRow(ctx, `
+		UPDATE conversations
+		SET mls_group_id_hex = $2,
+		    mls_initiator_id = $3,
+		    mls_established_at = NOW()
+		WHERE id = $1
+		  AND mls_group_id_hex IS NULL
+		RETURNING id, user_a, user_b, created_at, mls_group_id_hex, mls_initiator_id, mls_established_at
+	`, conversationID, groupIDHex, initiatorID).Scan(
+		&c.ID, &c.UserA, &c.UserB, &c.CreatedAt,
+		&c.MlsGroupIDHex, &c.MlsInitiatorID, &c.MlsEstablishedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		existing, getErr := r.GetConversation(ctx, conversationID)
+		if getErr != nil {
+			return Conversation{}, getErr
+		}
+		if existing.MlsGroupIDHex != nil {
+			return Conversation{}, ErrMlsAlreadySet
+		}
+		return Conversation{}, ErrConversationMissing
+	}
+	if err != nil {
+		return Conversation{}, fmt.Errorf("set mls group: %w", err)
 	}
 	return c, nil
 }

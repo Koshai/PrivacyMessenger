@@ -15,9 +15,11 @@ import (
 
 	"example.com/private-messenger/backend/internal/auth"
 	"example.com/private-messenger/backend/internal/config"
+	appcrypto "example.com/private-messenger/backend/internal/crypto"
 	"example.com/private-messenger/backend/internal/friends"
 	"example.com/private-messenger/backend/internal/httpapi"
 	"example.com/private-messenger/backend/internal/messaging"
+	"example.com/private-messenger/backend/internal/realtime"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -109,11 +111,22 @@ func main() {
 	friendsService := friends.NewService(db)
 	friendsHandler := httpapi.NewFriendsHandler(friendsService)
 
-	messagingService := messaging.NewService(
+	hub := realtime.NewHub()
+	realtimeHandler := httpapi.NewRealtimeHandler(hub, sessionRepository)
+
+	messagingInner := messaging.NewService(
 		messaging.NewRepository(db),
 		messaging.NewPostgresFriendshipChecker(db),
 	)
+	messagingService := messaging.NewNotifyingService(messagingInner, realtimeHandler)
 	messagingHandler := httpapi.NewMessagingHandler(messagingService)
+
+	cryptoService := appcrypto.NewService(
+		appcrypto.NewRepository(db),
+		messaging.NewPostgresFriendshipChecker(db),
+		appcrypto.NewPostgresDeviceOwnerChecker(db),
+	)
+	cryptoHandler := httpapi.NewCryptoHandler(cryptoService)
 
 	server := &http.Server{
 		Addr: net.JoinHostPort(cfg.Host, cfg.Port),
@@ -125,6 +138,8 @@ func main() {
 				LogoutHandler:        logoutHandler,
 				FriendsHandler:       friendsHandler,
 				MessagingHandler:     messagingHandler,
+				CryptoHandler:        cryptoHandler,
+				RealtimeHandler:      realtimeHandler,
 			},
 		),
 		ReadHeaderTimeout: 5 * time.Second,
