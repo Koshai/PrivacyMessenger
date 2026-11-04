@@ -168,6 +168,20 @@ func (h *CryptoHandler) PoolStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// RevokeCurrentDevice revokes MLS identity + key packages for the caller's device.
+func (h *CryptoHandler) RevokeCurrentDevice(w http.ResponseWriter, r *http.Request) {
+	session, ok := SessionFromContext(r.Context())
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	if err := h.service.RevokeDevice(r.Context(), session.UserID, session.DeviceID); err != nil {
+		writeCryptoError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func writeCryptoError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, crypto.ErrInvalidInput):

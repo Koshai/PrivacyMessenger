@@ -126,8 +126,19 @@ func (r *Repository) InsertEnvelope(
 		return SendResult{}, err
 	}
 
-	// Allocate conversation_seq in this transaction so commit order == seq order.
+	// Lock conversation row then allocate conversation_seq in the same
+	// transaction as the envelope insert. Row lock serializes concurrent
+	// senders so commit order matches seq order (C4).
 	var convSeq int64
+	err = tx.QueryRow(ctx, `
+		SELECT next_envelope_seq
+		FROM conversations
+		WHERE id = $1
+		FOR UPDATE
+	`, envelope.ConversationID).Scan(&convSeq)
+	if err != nil {
+		return SendResult{}, fmt.Errorf("lock conversation for seq: %w", err)
+	}
 	err = tx.QueryRow(ctx, `
 		UPDATE conversations
 		SET next_envelope_seq = next_envelope_seq + 1

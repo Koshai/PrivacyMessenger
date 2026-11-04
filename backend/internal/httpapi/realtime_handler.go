@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"example.com/private-messenger/backend/internal/auth"
@@ -12,6 +14,11 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
+)
+
+const (
+	wsAuthFrameMaxBytes = 8 * 1024
+	wsHandshakeTimeout  = 10 * time.Second
 )
 
 type RealtimeHandler struct {
@@ -40,6 +47,7 @@ func (h *RealtimeHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		CompressionMode: websocket.CompressionDisabled,
+		OriginPatterns:  wsOriginPatterns(),
 	})
 	if err != nil {
 		return
@@ -126,7 +134,7 @@ func (h *RealtimeHandler) handshakeAuth(
 	ctx context.Context,
 	conn *websocket.Conn,
 ) (auth.AuthenticatedSession, string, error) {
-	readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	readCtx, cancel := context.WithTimeout(ctx, wsHandshakeTimeout)
 	defer cancel()
 
 	msgType, data, err := conn.Read(readCtx)
@@ -135,6 +143,9 @@ func (h *RealtimeHandler) handshakeAuth(
 	}
 	if msgType != websocket.MessageText {
 		return auth.AuthenticatedSession{}, "", errors.New("expected text auth frame")
+	}
+	if len(data) > wsAuthFrameMaxBytes {
+		return auth.AuthenticatedSession{}, "", errors.New("auth frame too large")
 	}
 
 	var body struct {
@@ -147,6 +158,9 @@ func (h *RealtimeHandler) handshakeAuth(
 	if body.Type != "auth" || body.Token == "" {
 		return auth.AuthenticatedSession{}, "", ErrInvalidAuthorization
 	}
+	if len(body.Token) > 4096 {
+		return auth.AuthenticatedSession{}, "", errors.New("token too large")
+	}
 	if h.auth == nil {
 		return auth.AuthenticatedSession{}, "", errors.New("auth unavailable")
 	}
@@ -155,6 +169,25 @@ func (h *RealtimeHandler) handshakeAuth(
 		return auth.AuthenticatedSession{}, "", err
 	}
 	return session, body.Token, nil
+}
+
+// wsOriginPatterns returns extra allowed WebSocket Origin host patterns.
+// Empty WS_ALLOWED_ORIGINS keeps coder/websocket default (request host only).
+// Comma-separated hosts, e.g. "app.example.com,*.example.com".
+func wsOriginPatterns() []string {
+	raw := strings.TrimSpace(os.Getenv("WS_ALLOWED_ORIGINS"))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func (h *RealtimeHandler) NotifyEnvelope(recipientID, conversationID, envelopeID uuid.UUID) {

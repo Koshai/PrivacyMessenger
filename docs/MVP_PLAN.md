@@ -39,9 +39,10 @@
 
 **Status:**
 - **C1** (`e594b14`): OpenMLS PoC + dependency review.
-- **C2** (`cff4c95` on remote): DeviceCryptoStore, key packages, MLS mapping, chat UI, WebSocket.
-- **C3** (local): secure WS handshake, durable `conversation_seq`, enrollment fail-closed, Postgres E2E, CI — see `docs/E2EE_C3_REPORT.md`.
-- **Milestone C not complete** until iOS verification (or explicit waiver) and CI green; then product sign-off.
+- **C2** (`cff4c95`): DeviceCryptoStore, key packages, MLS mapping, chat UI, WebSocket.
+- **C3** (`1ad22da`): secure WS handshake, durable `conversation_seq`, enrollment fail-closed, Postgres E2E — see `docs/E2EE_C3_REPORT.md`.
+- **C4**: final verification — enrollment states, live native OpenMLS E2E, CI hardening (Go 1.26.10), Android/iOS gates — see `docs/E2EE_C4_REPORT.md`.
+- **Milestone C complete only after remote CI is green on the C4 commit**; then product sign-off. **Do not start D until review.**
 
 ## Milestone D — One-to-one audio/video calls
 

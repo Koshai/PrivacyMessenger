@@ -7,18 +7,18 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'openmls/openmls_encryption_service.dart';
 import 'protocol_messages.dart';
 
-/// Policies for identity lifecycle (C3).
+/// Policies for identity lifecycle (C3/C4).
 ///
-/// - **Logout:** wipe local MLS identity + DB key from secure storage. The
-///   encrypted MLS DB file may remain on disk but is unreadable without the
-///   key. Message history is therefore **not** decryptable after logout until
-///   an explicit re-enrollment (which creates a new identity — old ciphertext
-///   cannot be read). See `docs/E2EE_C3_REPORT.md`.
+/// - **Logout:** wipe local MLS identity + DB key from secure storage and mark
+///   state [CryptoEnrollmentState.revoked]. Encrypted MLS DB ciphertext may
+///   remain on disk but is unreadable. Re-enrollment creates a **new** identity —
+///   prior history cannot be decrypted. See `docs/E2EE_C3_REPORT.md` /
+///   `docs/E2EE_C4_REPORT.md`.
 /// - **Device replacement:** a new authenticated [deviceId] must not reuse
 ///   another device's stored material.
-/// - **Key loss / corruption:** if an enrollment marker exists, missing or
-///   corrupted material throws [CryptoKeyLossException] and **never** silently
-///   regenerates keys.
+/// - **Key loss / corruption:** never silently regenerates keys.
+/// - **Interrupted writes:** [CryptoEnrollmentState.enrolling] makes partial
+///   persistence recoverable or fail-closed without inventing a new identity.
 class CryptoKeyLossException implements Exception {
   final String message;
   const CryptoKeyLossException(this.message);
@@ -33,6 +33,24 @@ class DeviceIdentityMismatchException implements Exception {
 
   @override
   String toString() => 'DeviceIdentityMismatchException: $message';
+}
+
+/// Explicit enrollment lifecycle states (C4).
+enum CryptoEnrollmentState {
+  /// No enrollment marker and no material.
+  neverEnrolled,
+
+  /// Replacement/create in progress; crash may leave incomplete material.
+  enrolling,
+
+  /// Material and marker consistent.
+  active,
+
+  /// Marker present but material missing/unreadable.
+  corrupted,
+
+  /// Explicit logout or revoke; re-enrollment must be intentional.
+  revoked,
 }
 
 /// Persisted MLS device binding (no private key material in [toString]).
@@ -70,6 +88,9 @@ class PersistedDeviceCrypto {
 /// Production store for MLS identity + SQLCipher DB key.
 class DeviceCryptoStore {
   static const _storageKeyPrefix = 'device_crypto_v1';
+  static const _statePrefix = 'device_crypto_state_v1';
+
+  /// Legacy enrollment marker from C3 (`1` means previously enrolled).
   static const _enrolledPrefix = 'device_crypto_enrolled_v1';
 
   final FlutterSecureStorage _storage;
@@ -83,24 +104,76 @@ class DeviceCryptoStore {
   String _keyFor(String userId, String deviceId) =>
       '${_storageKeyPrefix}_${userId}_$deviceId';
 
+  String _stateKey(String userId, String deviceId) =>
+      '${_statePrefix}_${userId}_$deviceId';
+
   String _enrolledKey(String userId, String deviceId) =>
       '${_enrolledPrefix}_${userId}_$deviceId';
 
   static String fingerprintOf(List<int> publicKey) =>
       sha256.convert(publicKey).toString();
 
+  Future<CryptoEnrollmentState> enrollmentState({
+    required String userId,
+    required String deviceId,
+  }) async {
+    final stateRaw = await _storage.read(key: _stateKey(userId, deviceId));
+    final material = await _readRaw(userId: userId, deviceId: deviceId);
+
+    if (stateRaw == CryptoEnrollmentState.revoked.name) {
+      return CryptoEnrollmentState.revoked;
+    }
+    if (stateRaw == CryptoEnrollmentState.enrolling.name) {
+      if (material.record != null && material.consistent) {
+        // Crash after material write but before active transition — recover.
+        await _setState(
+          userId: userId,
+          deviceId: deviceId,
+          state: CryptoEnrollmentState.active,
+        );
+        return CryptoEnrollmentState.active;
+      }
+      // Incomplete enrolling write — fail closed (do not invent new keys).
+      return CryptoEnrollmentState.corrupted;
+    }
+    if (stateRaw == CryptoEnrollmentState.active.name ||
+        stateRaw == '1' /* legacy */ ||
+        await _legacyEnrolled(userId: userId, deviceId: deviceId)) {
+      if (material.record != null && material.consistent) {
+        return CryptoEnrollmentState.active;
+      }
+      return CryptoEnrollmentState.corrupted;
+    }
+    if (material.record != null && material.consistent) {
+      // Material without state (upgrade path) — treat as active.
+      await _setState(
+        userId: userId,
+        deviceId: deviceId,
+        state: CryptoEnrollmentState.active,
+      );
+      return CryptoEnrollmentState.active;
+    }
+    if (material.corruptBlob) {
+      return CryptoEnrollmentState.corrupted;
+    }
+    return CryptoEnrollmentState.neverEnrolled;
+  }
+
   Future<bool> wasEverEnrolled({
     required String userId,
     required String deviceId,
   }) async {
-    final marker = await _storage.read(key: _enrolledKey(userId, deviceId));
-    return marker == '1';
+    final state = await enrollmentState(userId: userId, deviceId: deviceId);
+    return state == CryptoEnrollmentState.active ||
+        state == CryptoEnrollmentState.corrupted ||
+        state == CryptoEnrollmentState.enrolling ||
+        state == CryptoEnrollmentState.revoked;
   }
 
   /// Loads existing material or creates once for this user/device binding.
   ///
-  /// If an enrollment marker exists and material is missing/corrupt, throws
-  /// [CryptoKeyLossException] instead of regenerating.
+  /// Never silently regenerates after [CryptoEnrollmentState.active],
+  /// [CryptoEnrollmentState.corrupted], or [CryptoEnrollmentState.revoked].
   Future<PersistedDeviceCrypto> loadOrCreate({
     required String userId,
     required String deviceId,
@@ -109,7 +182,7 @@ class DeviceCryptoStore {
     required Future<Uint8List> Function() createDatabaseKey,
     bool expectExisting = false,
   }) async {
-    final enrolled = await wasEverEnrolled(userId: userId, deviceId: deviceId);
+    final state = await enrollmentState(userId: userId, deviceId: deviceId);
     final existing = await read(userId: userId, deviceId: deviceId);
 
     if (existing != null) {
@@ -118,35 +191,38 @@ class DeviceCryptoStore {
           'Stored crypto binding does not match authenticated session',
         );
       }
-      await _markEnrolled(userId: userId, deviceId: deviceId);
+      await _assertMaterialConsistent(existing);
+      await _setState(
+        userId: userId,
+        deviceId: deviceId,
+        state: CryptoEnrollmentState.active,
+      );
       return existing;
     }
 
-    if (expectExisting || enrolled) {
-      throw const CryptoKeyLossException(
-        'MLS identity missing or corrupted after enrollment; '
+    // Revoked (logout) may enroll a fresh identity on the next authenticated
+    // session — that is intentional, not silent regeneration of lost keys.
+    if (expectExisting ||
+        state == CryptoEnrollmentState.active ||
+        state == CryptoEnrollmentState.corrupted ||
+        state == CryptoEnrollmentState.enrolling) {
+      throw CryptoKeyLossException(
+        'MLS identity missing or inconsistent (state=${state.name}); '
         'refusing silent regeneration',
       );
     }
 
-    final identity = await createIdentity();
-    final dbKey = await createDatabaseKey();
-    final record = PersistedDeviceCrypto(
+    return _persistNewEnrollment(
       userId: userId,
       deviceId: deviceId,
       identityLabel: identityLabel,
-      publicKey: List<int>.from(identity.publicKey),
-      signerBytes: List<int>.from(identity.signerBytes),
-      databaseEncryptionKey: List<int>.from(dbKey),
-      fingerprintHex: fingerprintOf(identity.publicKey),
+      createIdentity: createIdentity,
+      createDatabaseKey: createDatabaseKey,
     );
-    await _write(record);
-    await _markEnrolled(userId: userId, deviceId: deviceId);
-    return record;
   }
 
-  /// Explicit re-enrollment after key loss (user-confirmed). Clears markers
-  /// then creates fresh material.
+  /// Explicit re-enrollment after key loss (user-confirmed). Safe against
+  /// interrupted replacement: marks revoked, clears, then enrolling→active.
   Future<PersistedDeviceCrypto> forceReenroll({
     required String userId,
     required String deviceId,
@@ -154,9 +230,14 @@ class DeviceCryptoStore {
     required Future<DeviceIdentityRecord> Function() createIdentity,
     required Future<Uint8List> Function() createDatabaseKey,
   }) async {
+    await _setState(
+      userId: userId,
+      deviceId: deviceId,
+      state: CryptoEnrollmentState.revoked,
+    );
     await clear(userId: userId, deviceId: deviceId);
     await _storage.delete(key: _enrolledKey(userId, deviceId));
-    return loadOrCreate(
+    return _persistNewEnrollment(
       userId: userId,
       deviceId: deviceId,
       identityLabel: identityLabel,
@@ -169,47 +250,141 @@ class DeviceCryptoStore {
     required String userId,
     required String deviceId,
   }) async {
-    final raw = await _storage.read(key: _keyFor(userId, deviceId));
-    if (raw == null) return null;
-
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map<String, dynamic>) {
-        throw const FormatException('invalid crypto blob');
-      }
-      return _fromJson(decoded);
-    } on FormatException {
+    final result = await _readRaw(userId: userId, deviceId: deviceId);
+    if (result.corruptBlob) {
       await _storage.delete(key: _keyFor(userId, deviceId));
-      // Keep enrollment marker so loadOrCreate cannot silently regenerate.
-      return null;
-    } on ArgumentError {
-      await _storage.delete(key: _keyFor(userId, deviceId));
-      return null;
-    } on TypeError {
-      await _storage.delete(key: _keyFor(userId, deviceId));
+      // Keep/advance state to corrupted so loadOrCreate cannot silently regen.
+      await _setState(
+        userId: userId,
+        deviceId: deviceId,
+        state: CryptoEnrollmentState.corrupted,
+      );
       return null;
     }
+    return result.record;
   }
 
   Future<void> clear({required String userId, required String deviceId}) async {
     await _storage.delete(key: _keyFor(userId, deviceId));
   }
 
-  /// Logout: erase crypto keys. Enrollment marker is cleared so a future login
-  /// on the same device id can enroll again only after a new auth session.
+  /// Logout: erase crypto keys and mark revoked so a future login cannot
+  /// silently recreate the same identity.
   Future<void> clearOnLogout({
     required String userId,
     required String deviceId,
   }) async {
     await clear(userId: userId, deviceId: deviceId);
     await _storage.delete(key: _enrolledKey(userId, deviceId));
+    await _setState(
+      userId: userId,
+      deviceId: deviceId,
+      state: CryptoEnrollmentState.revoked,
+    );
   }
 
-  Future<void> _markEnrolled({
+  /// Test/helper: simulate crash after marking enrolling but before material.
+  Future<void> beginEnrollmentOnly({
     required String userId,
     required String deviceId,
   }) async {
+    await _setState(
+      userId: userId,
+      deviceId: deviceId,
+      state: CryptoEnrollmentState.enrolling,
+    );
+  }
+
+  Future<PersistedDeviceCrypto> _persistNewEnrollment({
+    required String userId,
+    required String deviceId,
+    required String identityLabel,
+    required Future<DeviceIdentityRecord> Function() createIdentity,
+    required Future<Uint8List> Function() createDatabaseKey,
+  }) async {
+    await _setState(
+      userId: userId,
+      deviceId: deviceId,
+      state: CryptoEnrollmentState.enrolling,
+    );
+
+    final identity = await createIdentity();
+    final dbKey = await createDatabaseKey();
+    final record = PersistedDeviceCrypto(
+      userId: userId,
+      deviceId: deviceId,
+      identityLabel: identityLabel,
+      publicKey: List<int>.from(identity.publicKey),
+      signerBytes: List<int>.from(identity.signerBytes),
+      databaseEncryptionKey: List<int>.from(dbKey),
+      fingerprintHex: fingerprintOf(identity.publicKey),
+    );
+    await _assertMaterialConsistent(record);
+    await _write(record);
+    await _setState(
+      userId: userId,
+      deviceId: deviceId,
+      state: CryptoEnrollmentState.active,
+    );
+    // Keep legacy marker for older readers during upgrade.
     await _storage.write(key: _enrolledKey(userId, deviceId), value: '1');
+    return record;
+  }
+
+  Future<void> _assertMaterialConsistent(PersistedDeviceCrypto record) async {
+    if (record.publicKey.isEmpty || record.signerBytes.isEmpty) {
+      throw const CryptoKeyLossException('identity material incomplete');
+    }
+    if (record.databaseEncryptionKey.length != 32 ||
+        record.databaseEncryptionKey.every((b) => b == 0)) {
+      throw const CryptoKeyLossException('database key invalid');
+    }
+    if (record.fingerprintHex != fingerprintOf(record.publicKey)) {
+      throw const CryptoKeyLossException('fingerprint inconsistent with public key');
+    }
+  }
+
+  Future<bool> _legacyEnrolled({
+    required String userId,
+    required String deviceId,
+  }) async {
+    final marker = await _storage.read(key: _enrolledKey(userId, deviceId));
+    return marker == '1';
+  }
+
+  Future<void> _setState({
+    required String userId,
+    required String deviceId,
+    required CryptoEnrollmentState state,
+  }) async {
+    await _storage.write(key: _stateKey(userId, deviceId), value: state.name);
+  }
+
+  Future<({PersistedDeviceCrypto? record, bool consistent, bool corruptBlob})>
+      _readRaw({
+    required String userId,
+    required String deviceId,
+  }) async {
+    final raw = await _storage.read(key: _keyFor(userId, deviceId));
+    if (raw == null) {
+      return (record: null, consistent: false, corruptBlob: false);
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('invalid crypto blob');
+      }
+      final record = _fromJson(decoded);
+      return (record: record, consistent: true, corruptBlob: false);
+    } on FormatException {
+      return (record: null, consistent: false, corruptBlob: true);
+    } on ArgumentError {
+      return (record: null, consistent: false, corruptBlob: true);
+    } on TypeError {
+      return (record: null, consistent: false, corruptBlob: true);
+    } on CryptoKeyLossException {
+      return (record: null, consistent: false, corruptBlob: true);
+    }
   }
 
   Future<void> _write(PersistedDeviceCrypto record) async {

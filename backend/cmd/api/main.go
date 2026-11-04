@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -127,22 +128,33 @@ func main() {
 	)
 	cryptoHandler := httpapi.NewCryptoHandler(cryptoService)
 
+	tlsCert := strings.TrimSpace(os.Getenv("TLS_CERT_FILE"))
+	tlsKey := strings.TrimSpace(os.Getenv("TLS_KEY_FILE"))
+	requireTLS := strings.EqualFold(os.Getenv("REQUIRE_TLS"), "true") ||
+		strings.EqualFold(os.Getenv("APP_ENV"), "production")
+	if requireTLS && (tlsCert == "" || tlsKey == "") {
+		log.Fatal("production/REQUIRE_TLS requires TLS_CERT_FILE and TLS_KEY_FILE")
+	}
+
+	router := httpapi.NewConfiguredRouter(
+		httpapi.RouterDependencies{
+			AuthHandler:          authHandler,
+			VerifyHandler:        verifyHandler,
+			SessionAuthenticator: sessionRepository,
+			LogoutHandler:        logoutHandler,
+			FriendsHandler:       friendsHandler,
+			MessagingHandler:     messagingHandler,
+			CryptoHandler:        cryptoHandler,
+			RealtimeHandler:      realtimeHandler,
+		},
+	)
+
 	server := &http.Server{
-		Addr: net.JoinHostPort(cfg.Host, cfg.Port),
-		Handler: httpapi.NewConfiguredRouter(
-			httpapi.RouterDependencies{
-				AuthHandler:          authHandler,
-				VerifyHandler:        verifyHandler,
-				SessionAuthenticator: sessionRepository,
-				LogoutHandler:        logoutHandler,
-				FriendsHandler:       friendsHandler,
-				MessagingHandler:     messagingHandler,
-				CryptoHandler:        cryptoHandler,
-				RealtimeHandler:      realtimeHandler,
-			},
-		),
+		Addr:              net.JoinHostPort(cfg.Host, cfg.Port),
+		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	httpapi.AttachRedactingErrorLog(server)
 
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
@@ -154,8 +166,16 @@ func main() {
 	serverErrors := make(chan error, 1)
 
 	go func() {
+		if tlsCert != "" && tlsKey != "" {
+			log.Printf(
+				"Private Messenger API listening on https://%s (TLS)",
+				server.Addr,
+			)
+			serverErrors <- server.ListenAndServeTLS(tlsCert, tlsKey)
+			return
+		}
 		log.Printf(
-			"Private Messenger API listening on %s",
+			"Private Messenger API listening on http://%s",
 			server.Addr,
 		)
 		serverErrors <- server.ListenAndServe()

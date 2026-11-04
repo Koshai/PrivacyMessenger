@@ -21,6 +21,7 @@ class EncryptedConversationService {
   final Map<String, String> _knownFingerprints = {};
   final Map<String, String> _peerByConversation = {};
   final Set<String> _processedEnvelopeIds = {};
+  final Set<String> _joinedViaWelcome = {};
 
   String? keyChangeWarning;
 
@@ -181,6 +182,8 @@ class EncryptedConversationService {
         final groupId =
             await svc.joinFromWelcome(welcomeBytes: env.ciphertext);
         _groupByConversation[env.conversationId] = groupId;
+        _joinedViaWelcome.add(env.conversationId);
+        // Ack only after successful cryptographic processing (C4).
         await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
         _processedEnvelopeIds.add(env.id);
         return;
@@ -192,14 +195,38 @@ class EncryptedConversationService {
         return;
       }
 
+      if (env.contentType == MlsContentTypes.commit ||
+          env.contentType == MlsContentTypes.proposal) {
+        try {
+          await svc.processIncoming(
+            groupIdHex: groupId,
+            messageBytes: env.ciphertext,
+          );
+        } catch (_) {
+          // Joiners often already advanced via Welcome; a redundant Commit for
+          // the same epoch must not block recovery or cause silent discard of
+          // later application messages. Other crypto failures still surface.
+          if (!_joinedViaWelcome.contains(env.conversationId)) {
+            rethrow;
+          }
+        }
+        await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
+        _processedEnvelopeIds.add(env.id);
+        return;
+      }
+
       final decrypted = await svc.processIncoming(
         groupIdHex: groupId,
         messageBytes: env.ciphertext,
       );
-      await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
-      _processedEnvelopeIds.add(env.id);
 
-      if (env.contentType == MlsContentTypes.application && decrypted != null) {
+      if (env.contentType == MlsContentTypes.application) {
+        if (decrypted == null) {
+          // Failed crypto must not silently ack/discard (C4).
+          throw StateError('application message produced no plaintext');
+        }
+        await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
+        _processedEnvelopeIds.add(env.id);
         out.add(
           ChatMessageView(
             clientMessageId: env.clientMessageId,
@@ -211,7 +238,11 @@ class EncryptedConversationService {
             isMine: env.senderId == myUserId,
           ),
         );
+        return;
       }
+
+      await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
+      _processedEnvelopeIds.add(env.id);
     }
 
     for (final env in sorted) {

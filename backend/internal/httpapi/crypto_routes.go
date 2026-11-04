@@ -15,4 +15,5 @@ func RegisterCryptoRoutes(
 	mux.Handle("GET /crypto/key-packages/status", protect(handler.PoolStatus))
 	mux.Handle("POST /crypto/users/{userID}/key-packages/claim", protect(handler.ClaimKeyPackage))
 	mux.Handle("GET /crypto/users/{userID}/identities", protect(handler.PeerIdentities))
+	mux.Handle("POST /crypto/device/revoke", protect(handler.RevokeCurrentDevice))
 }
