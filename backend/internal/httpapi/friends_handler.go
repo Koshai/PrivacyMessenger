@@ -77,13 +77,29 @@ func (h *FriendsHandler) CreateRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		http.Error(w, "request must contain exactly one JSON object", http.StatusBadRequest)
+		return
+	}
 
 	err := h.service.RequestByEmail(r.Context(), session.UserID, body.Email)
 	if err != nil {
+		// Defense in depth: never distinguish relationship existence from
+		// unknown accounts via 409 on this endpoint.
+		if errors.Is(err, friends.ErrAlreadyFriends) ||
+			errors.Is(err, friends.ErrRequestAlreadyPending) {
+			writeFriendRequestAccepted(w)
+			return
+		}
 		writeFriendsError(w, err)
 		return
 	}
 
+	writeFriendRequestAccepted(w)
+}
+
+func writeFriendRequestAccepted(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusAccepted)
@@ -235,6 +251,11 @@ func (h *FriendsHandler) Block(w http.ResponseWriter, r *http.Request) {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		http.Error(w, "request must contain exactly one JSON object", http.StatusBadRequest)
 		return
 	}
 

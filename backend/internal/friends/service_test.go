@@ -257,7 +257,7 @@ func TestRequestByEmailSilentForUnknownUser(t *testing.T) {
 	}
 }
 
-func TestRequestByEmailRejectsDuplicate(t *testing.T) {
+func TestRequestByEmailDuplicateIsSilentSuccess(t *testing.T) {
 	store := newMemoryStore()
 	alice := uuid.New()
 	bob := uuid.New()
@@ -268,9 +268,11 @@ func TestRequestByEmailRejectsDuplicate(t *testing.T) {
 	if err := service.RequestByEmail(context.Background(), alice, "bob@example.com"); err != nil {
 		t.Fatal(err)
 	}
-	err := service.RequestByEmail(context.Background(), alice, "bob@example.com")
-	if !errors.Is(err, ErrRequestAlreadyPending) {
-		t.Fatalf("expected duplicate pending, got %v", err)
+	if err := service.RequestByEmail(context.Background(), alice, "bob@example.com"); err != nil {
+		t.Fatalf("expected silent success for duplicate pending, got %v", err)
+	}
+	if len(store.friendships) != 1 {
+		t.Fatalf("expected one pending row, got %d", len(store.friendships))
 	}
 }
 
@@ -287,8 +289,8 @@ func TestAcceptAndRejectAuthorization(t *testing.T) {
 
 	service := NewServiceWithDeps(store, newMemoryLimiter(10))
 
-	if err := service.Accept(context.Background(), intruder, pending.ID); !errors.Is(err, ErrNotAuthorized) {
-		t.Fatalf("expected unauthorized accept, got %v", err)
+	if err := service.Accept(context.Background(), intruder, pending.ID); !errors.Is(err, ErrRequestNotFound) {
+		t.Fatalf("expected not-found for unauthorized accept, got %v", err)
 	}
 
 	if err := service.Accept(context.Background(), bob, pending.ID); err != nil {
@@ -426,22 +428,17 @@ func TestConcurrentDuplicateRequests(t *testing.T) {
 	close(errs)
 
 	success := 0
-	duplicates := 0
 	for err := range errs {
-		switch {
-		case err == nil:
-			success++
-		case errors.Is(err, ErrRequestAlreadyPending):
-			duplicates++
-		default:
+		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
+		success++
 	}
 
-	if success != 1 {
-		t.Fatalf("expected exactly one success, got %d", success)
+	if success != 20 {
+		t.Fatalf("expected 20 silent successes, got %d", success)
 	}
-	if duplicates != 19 {
-		t.Fatalf("expected 19 duplicates, got %d", duplicates)
+	if len(store.friendships) != 1 {
+		t.Fatalf("expected one pending friendship, got %d", len(store.friendships))
 	}
 }

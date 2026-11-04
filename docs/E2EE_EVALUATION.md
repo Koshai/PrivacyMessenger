@@ -1,51 +1,48 @@
-# Milestone C — E2EE evaluation (pre-integration)
+# Milestone C — E2EE decision matrix (pre-integration)
 
-**Date:** 2026-11-03  
-**Decision status:** Provisional candidate identified; **integration not started** pending licensing acceptance.
+**Updated:** 2026-11-03  
+**Status:** Proprietary decision recorded. **C1 OpenMLS PoC complete for review** (`docs/E2EE_C1_REPORT.md`, `docs/E2EE_DEPENDENCY_REVIEW.md`). Production messaging crypto **not** selected until C2 approval. Milestone C **not** complete.  
+**Client boundary:** `mobile/lib/core/crypto/encryption_service.dart` (`EncryptionService` / `MlsGroupEncryptionService` / `OpenMlsEncryptionService` PoC).
 
-## Requirement reminder
+Licenses below were checked from upstream LICENSE files / pub.dev license pages on 2026-11-03 — not from README marketing text alone.
 
-Do not invent a cryptographic protocol. Prefer a maintained, independently reviewed implementation suitable for Flutter / Android / iOS. The Go backend must never receive plaintext message content or private keys.
+### Provisional C1 candidate (post-decision)
 
-## Candidates reviewed
+| Option | Notes |
+| --- | --- |
+| **G. pub.dev `openmls` 3.3.0** | MIT Dart wrapper + MIT Rust OpenMLS; RFC 9420 ciphersuite used in C1. **PoC only** — see C1 report for Android pass / iOS pending / C2 conditions. |
 
-### 1. `libsignal` on pub.dev (Dart bindings to Signal’s libsignal)
+## Decision matrix
 
-- **URL:** https://pub.dev/packages/libsignal  
-- **Upstream crypto:** [signalapp/libsignal](https://github.com/signalapp/libsignal) (Rust Signal Protocol: X3DH / Double Ratchet; recent versions include PQXDH / Kyber material in upstream).  
-- **Platforms claimed:** Android SDK 24+, iOS 13+, plus desktop/web WASM. Fits MVP mobile targets.  
-- **Maintenance:** Active releases through 2026 (e.g. 9.0.0 aligning with libsignal v0.106.0).  
-- **License:** **AGPL-3.0** for the Dart wrapper (confirm on pub.dev / GitHub before shipping). AGPL typically requires offering corresponding source for network-distributed modified versions — a **product/legal decision**, not only a technical one.  
-- **Trust assumptions:** Correctness depends on upstream Signal protocol code plus the third-party Dart FFI bridge quality and store implementations we write (identity/prekey/session stores). Signal does not officially support third-party use of libsignal.  
-- **Limitations:** Group/sealed-sender features exist in the library but must **not** expand MVP scope. Claiming “Signal-compatible,” forward secrecy, or post-compromise security is allowed only for properties the integrated stack actually provides **and** that we test.
+| Option | Protocol pedigree | Flutter path | Verified licenses | Android/iOS | Session/key storage | Commercial / disclosure | Maintenance | Operational risks | Fit for PrivacyMessenger |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **A. pub.dev `libsignal`** | Signal Protocol via upstream [signalapp/libsignal](https://github.com/signalapp/libsignal) | Dart FFI package with prebuilt natives | Wrapper **AGPL-3.0** (pub.dev). Upstream libsignal LICENSE is **AGPL-3.0** (fetched from `signalapp/libsignal` main). App-store exception on the Dart repo **does not** extend to Signal’s precompiled binaries (package docs cite signalapp/libsignal#684). | Android SDK 24+, iOS 13+ claimed | App must implement identity/prekey/session stores; private keys via `flutter_secure_storage` | AGPL source-offer obligations for network/conveyed modified versions; binary NOTICE obligations for Rust deps | Active 2026 releases | Third-party use of libsignal is **unsupported** by Signal; FFI bridge trust; AGPL compliance ops | Strong crypto, heavy legal constraint |
+| **B. Matrix `flutter_vodozemac` + Olm/Megolm** | Olm (DR) / Megolm; Matrix-audited [vodozemac](https://github.com/matrix-org/vodozemac) (Least Authority audit public) | Flutter bindings package | **vodozemac Rust: Apache-2.0** (GitHub LICENSE). **flutter_vodozemac: AGPL-3.0** (pub.dev license page). Full Matrix Dart SDK also **AGPL-3.0**. | Supported via Flutter plugin | Same store responsibility; Megolm group features out of MVP scope | Using AGPL Flutter bindings likely pulls AGPL obligations even though Rust core is Apache | Active Matrix ecosystem | Binding license ≠ crypto core license — easy to misread; Megolm is group-oriented | Crypto good; Flutter binding still AGPL |
+| **C. Direct FFI / platform channel to Apache vodozemac** | Same Olm/Megolm as B | Custom Flutter Rust Bridge or platform channel **owned by us**, depending only on Apache vodozemac | Target: **Apache-2.0** crypto only (must not copy AGPL binding code) | Feasible Android/iOS; we own packaging | We design secure persistent session storage | Permissive for commercial closed/source-available apps if we keep our bridge non-AGPL | We maintain the bridge | Engineering cost; must re-verify native build reproducibility and audits still apply to our packaging | **Best license/control tradeoff if AGPL is unacceptable** |
+| **D. Legacy `olm` / `flutter_olm` Dart packages** | libolm C | Older FFI | pub.dev `olm` lists **Apache-2.0** | Historically Android/iOS via flutter_olm | Same | Permissive | **Weaker maintenance** (vodozemac is Matrix’s modern replacement) | libolm deprecation trajectory | Not preferred vs C |
+| **E. Homemade AES/NaCl “E2EE”** | None | N/A | N/A | N/A | N/A | N/A | N/A | Protocol bugs certain | **Rejected by charter** |
+| **F. Official Signal Java/Swift only via channels** | Signal | Dual native embeds | AGPL / Signal terms | Possible | Complex | Unsupported third-party use | High dual-stack cost | Diverges from Flutter architecture | Poor fit |
 
-### 2. Homemade AES / NaCl “E2EE”
+## Popularity is not a selection criterion
 
-- **Rejected.** Charter forbids substituting homemade cryptography.
+Ease of `flutter pub add` is irrelevant if licenses, unsupported upstream policy, or store obligations are incompatible. Exact LICENSE files and bundled binary notices must be re-checked at pin time.
 
-### 3. Official Signal client libraries without a Dart bridge
+## Secure persistent session storage (all options)
 
-- Native Android/iOS embedding of official artifacts is possible but would fork the Flutter architecture and is unsupported for third parties. Higher integration cost than the Dart wrapper for this codebase.
+Regardless of library:
 
-## Provisional selection
+1. Private identity and ratchet state only in hardware-backed secure storage where available.  
+2. Never upload private keys or plaintext to the Go API.  
+3. Server stores opaque envelopes only (already started — see messaging module).  
+4. Key change / safety-number UX deferred until a backend is chosen.
 
-**Prefer `libsignal` (pub.dev) wrapping upstream Signal Protocol**, contingent on:
+## Recommendation
 
-1. Explicit acceptance of **AGPL-3.0** obligations for PrivacyMessenger distribution, **or** an alternative maintained non-AGPL binding with equivalent protocol pedigree.  
-2. Spike proving: identity key generation, secure private-key storage (`flutter_secure_storage`), prekey upload, two-device encrypt/decrypt, tamper rejection — on Android emulator at minimum.  
-3. Server design that stores **opaque ciphertext envelopes only**.
+1. **Current proprietary path:** review C1 results for **Option G (`openmls`)** before C2.  
+2. AGPL options A/B remain **out** without explicit approval.  
+3. Option C (first-party vodozemac) stays a fallback if OpenMLS C2 conditions fail.  
+4. Do **not** wire production chat UI crypto until C2 approval.
 
-If AGPL is unacceptable and no other trustworthy binding is available, **Milestone C stops** and reports a licensing blocker rather than shipping plaintext or DIY crypto.
+## Explicit non-claims until proven
 
-## Planned server contract (after approval)
-
-- Device registers public identity / signed prekeys / one-time prekeys.  
-- Messages are encrypted envelopes: `{conversation_id, sender_device, ciphertext, message_id, sent_at}`.  
-- Delivery, sync, and acks operate on envelopes; no plaintext columns.  
-- Authenticated WebSocket only after persistence contracts exist.
-
-## What we will not claim until proven in tests
-
-- Interoperability with Signal Messenger clients  
-- Specific FS / PCS guarantees beyond what automated tests demonstrate for our store wiring  
-- Sealed sender anonymity against our own server metadata
+No claims of Signal client interoperability, sealed-sender anonymity against our server, or FS/PCS beyond tests of the chosen wiring.

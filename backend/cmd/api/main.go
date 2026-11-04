@@ -17,6 +17,7 @@ import (
 	"example.com/private-messenger/backend/internal/config"
 	"example.com/private-messenger/backend/internal/friends"
 	"example.com/private-messenger/backend/internal/httpapi"
+	"example.com/private-messenger/backend/internal/messaging"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -108,6 +109,12 @@ func main() {
 	friendsService := friends.NewService(db)
 	friendsHandler := httpapi.NewFriendsHandler(friendsService)
 
+	messagingService := messaging.NewService(
+		messaging.NewRepository(db),
+		messaging.NewPostgresFriendshipChecker(db),
+	)
+	messagingHandler := httpapi.NewMessagingHandler(messagingService)
+
 	server := &http.Server{
 		Addr: net.JoinHostPort(cfg.Host, cfg.Port),
 		Handler: httpapi.NewConfiguredRouter(
@@ -117,6 +124,7 @@ func main() {
 				SessionAuthenticator: sessionRepository,
 				LogoutHandler:        logoutHandler,
 				FriendsHandler:       friendsHandler,
+				MessagingHandler:     messagingHandler,
 			},
 		),
 		ReadHeaderTimeout: 5 * time.Second,

@@ -178,9 +178,9 @@ func TestAcceptFriendRequestRoute(t *testing.T) {
 	}
 }
 
-func TestUnauthorizedAcceptMappedToForbidden(t *testing.T) {
+func TestUnauthorizedAcceptMappedToNotFound(t *testing.T) {
 	requestID := uuid.New()
-	router := friendsRouter(&fakeFriendsService{acceptErr: friends.ErrNotAuthorized}, fakeSessionAuthenticator{
+	router := friendsRouter(&fakeFriendsService{acceptErr: friends.ErrRequestNotFound}, fakeSessionAuthenticator{
 		session: auth.AuthenticatedSession{
 			UserID:    uuid.New(),
 			DeviceID:  uuid.New(),
@@ -193,7 +193,7 @@ func TestUnauthorizedAcceptMappedToForbidden(t *testing.T) {
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 }

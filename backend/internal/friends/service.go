@@ -74,7 +74,9 @@ func (s *Service) RequestByEmail(
 		return err
 	}
 	if accepted != nil {
-		return ErrAlreadyFriends
+		// Idempotent silent success — do not disclose existing relationships
+		// via a distinct HTTP status from unknown emails.
+		return nil
 	}
 
 	pending, err := s.store.FindPendingBetween(ctx, requesterID, targetID)
@@ -82,14 +84,18 @@ func (s *Service) RequestByEmail(
 		return err
 	}
 	if pending != nil {
-		return ErrRequestAlreadyPending
+		return nil
 	}
 
 	_, err = s.store.CreatePending(ctx, requesterID, targetID)
 	if err != nil {
+		if errors.Is(err, ErrRequestAlreadyPending) {
+			return nil
+		}
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return ErrRequestAlreadyPending
+			// Concurrent duplicate insert — treat as success.
+			return nil
 		}
 		return err
 	}
@@ -105,11 +111,9 @@ func (s *Service) Accept(
 	if err != nil {
 		return err
 	}
-	if f.Status != StatusPending {
+	if f.Status != StatusPending || f.AddresseeID != actorID {
+		// Collapse not-found and unauthorized to avoid confirming request IDs.
 		return ErrRequestNotFound
-	}
-	if f.AddresseeID != actorID {
-		return ErrNotAuthorized
 	}
 
 	blocked, err := s.store.IsBlockedEitherWay(ctx, f.RequesterID, f.AddresseeID)
@@ -131,11 +135,8 @@ func (s *Service) Reject(
 	if err != nil {
 		return err
 	}
-	if f.Status != StatusPending {
+	if f.Status != StatusPending || f.AddresseeID != actorID {
 		return ErrRequestNotFound
-	}
-	if f.AddresseeID != actorID {
-		return ErrNotAuthorized
 	}
 	return s.store.UpdateStatus(ctx, requestID, StatusRejected)
 }

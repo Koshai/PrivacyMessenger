@@ -10,9 +10,8 @@ All endpoints require `Authorization: Bearer <session-token>`.
 { "email": "friend@example.com" }
 ```
 
-- `202` generic success (also used when the account does not exist or is blocked, to reduce enumeration)
+- `202` generic success for created, unknown email, blocked target, already-friends, and already-pending (status codes must not enumerate accounts or relationships)
 - `400` invalid email / self-invite
-- `409` already friends or pending
 - `429` rate limited
 
 ## Lists (caller-private only)

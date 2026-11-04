@@ -38,6 +38,8 @@ class AuthController extends ChangeNotifier {
 
   bool get isSigningOut => _signingOut;
 
+  bool _isCurrent(int generation) => !_disposed && generation == _generation;
+
   Future<String?> sessionToken() async {
     final session = await _withStore(_store.read);
     return session?.token;
@@ -61,6 +63,20 @@ class AuthController extends ChangeNotifier {
     });
   }
 
+  /// Clears local storage only when this generation is still current and the
+  /// stored token still matches [expectedToken]. Prevents a stale validation
+  /// from wiping a newer sign-in or an in-flight sign-out from racing.
+  Future<void> _clearIfCurrent(int generation, String expectedToken) {
+    return _withStore(() async {
+      if (!_isCurrent(generation)) return;
+      final current = await _store.read();
+      if (!_isCurrent(generation)) return;
+      if (current?.token == expectedToken) {
+        await _store.clear();
+      }
+    });
+  }
+
   Future<void> restore() async {
     final generation = ++_generation;
 
@@ -69,7 +85,7 @@ class AuthController extends ChangeNotifier {
     try {
       final session = await _withStore(_store.read);
 
-      if (_disposed || generation != _generation) return;
+      if (!_isCurrent(generation)) return;
 
       if (session == null) {
         _update(const AuthState(status: AuthStatus.signedOut));
@@ -78,7 +94,7 @@ class AuthController extends ChangeNotifier {
 
       await _validateSession(session, generation);
     } catch (_) {
-      if (_disposed || generation != _generation) return;
+      if (!_isCurrent(generation)) return;
 
       _update(
         const AuthState(
@@ -95,13 +111,16 @@ class AuthController extends ChangeNotifier {
     _update(const AuthState(status: AuthStatus.checking));
 
     try {
-      await _withStore(() => _store.save(session));
+      await _withStore(() async {
+        if (!_isCurrent(generation)) return;
+        await _store.save(session);
+      });
 
-      if (_disposed || generation != _generation) return;
+      if (!_isCurrent(generation)) return;
 
       await _validateSession(session, generation);
     } catch (_) {
-      if (_disposed || generation != _generation) return;
+      if (!_isCurrent(generation)) return;
 
       _update(
         const AuthState(
@@ -116,14 +135,14 @@ class AuthController extends ChangeNotifier {
     try {
       final identity = await _validate(session.token);
 
-      if (_disposed || generation != _generation) return;
+      if (!_isCurrent(generation)) return;
 
       if (identity.userId != session.userId ||
           identity.deviceId != session.deviceId ||
           !DateTime.now().toUtc().isBefore(identity.expiresAt)) {
-        await _withStore(_store.clear);
+        await _clearIfCurrent(generation, session.token);
 
-        if (_disposed || generation != _generation) return;
+        if (!_isCurrent(generation)) return;
 
         _update(const AuthState(status: AuthStatus.signedOut));
         return;
@@ -133,12 +152,12 @@ class AuthController extends ChangeNotifier {
         AuthState(status: AuthStatus.authenticated, userId: identity.userId),
       );
     } on ApiException catch (e) {
-      if (_disposed || generation != _generation) return;
+      if (!_isCurrent(generation)) return;
 
       if (e.isUnauthorized) {
-        await _withStore(_store.clear);
+        await _clearIfCurrent(generation, session.token);
 
-        if (_disposed || generation != _generation) return;
+        if (!_isCurrent(generation)) return;
 
         _update(const AuthState(status: AuthStatus.signedOut));
       } else {
@@ -171,22 +190,25 @@ class AuthController extends ChangeNotifier {
     try {
       final session = await _withStore(_store.read);
 
-      if (_disposed || generation != _generation) return;
+      if (!_isCurrent(generation)) return;
 
       if (session == null) {
-        await _withStore(_store.clear);
-        if (_disposed || generation != _generation) return;
+        await _withStore(() async {
+          if (!_isCurrent(generation)) return;
+          await _store.clear();
+        });
+        if (!_isCurrent(generation)) return;
         _update(const AuthState(status: AuthStatus.signedOut));
         return;
       }
 
       await _revoke(session.token);
 
-      if (_disposed || generation != _generation) return;
+      if (!_isCurrent(generation)) return;
 
-      await _withStore(_store.clear);
+      await _clearIfCurrent(generation, session.token);
 
-      if (_disposed || generation != _generation) return;
+      if (!_isCurrent(generation)) return;
 
       _update(const AuthState(status: AuthStatus.signedOut));
     } finally {
