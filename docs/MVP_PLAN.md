@@ -42,11 +42,15 @@
 - **C2** (`cff4c95`): DeviceCryptoStore, key packages, MLS mapping, chat UI, WebSocket.
 - **C3** (`1ad22da`): secure WS handshake, durable `conversation_seq`, enrollment fail-closed, Postgres E2E — see `docs/E2EE_C3_REPORT.md`.
 - **C4**: final verification — enrollment states, live native OpenMLS E2E, CI hardening (Go 1.26.10), Android/iOS gates — see `docs/E2EE_C4_REPORT.md`.
-- **Milestone C complete** on remote `4e74c81` with CI green — product sign-off on residual limitations; **Do not start D until review.**
+- **Milestone C complete** on remote `4e74c81` with CI green — product sign-off on residual limitations.
 
 ## Milestone D — One-to-one audio/video calls
 
 **Goal:** WebRTC calling with authenticated signaling, mute/camera, timeouts, STUN/TURN docs, no media recording.
+
+**Status:**
+- **D1** (local for review): Go `internal/calling` signaling, HTTP API, WS hints, migration `000008`, tests — see `docs/CALLING_D1_REPORT.md`, `docs/CALLING_ARCHITECTURE.md`, `docs/CALLING_SECURITY.md`.
+- **D2–D7:** not started. **Milestone D not complete** until two-client media + platform checks pass. **Stop after each Dn for review when requested.**
 
 ## Milestone E — Release candidate
 

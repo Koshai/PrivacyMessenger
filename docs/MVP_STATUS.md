@@ -1,9 +1,8 @@
 # PrivacyMessenger MVP Status
 
-**Updated:** 2026-11-03  
+**Updated:** 2026-11-04  
 **Repository:** https://github.com/Koshai/PrivacyMessenger  
-**Remote `origin/master` HEAD:** `4e74c81` — *C4: final E2EE verification*  
-**CI:** [41776665396](https://github.com/Koshai/PrivacyMessenger/actions/runs/41776665396) **success**
+**Remote `origin/master`:** C complete; D1 local for review (see `docs/CALLING_D1_REPORT.md`)
 
 ## Milestone progress
 
@@ -11,28 +10,21 @@
 | --- | --- |
 | A — Auth | Complete |
 | B — Friends | Complete |
-| C — E2EE | **Complete (C4)** — remote CI green; residual limitations in `docs/E2EE_C4_REPORT.md` |
-| D — Calls | Not started — stop for review |
+| C — E2EE | **Complete (C4)** |
+| D — Calls | **D1 signaling complete for review** — D2–D7 not started; Milestone D not complete |
 | E — Release | Not started |
 
-## C4 gates
+## D1 gates (local)
 
 | Gate | Result |
 | --- | --- |
-| `flutter analyze` / `flutter test` | Pass (90 + 1 skipped without live env) |
-| Live two-client native OpenMLS ↔ API ↔ Postgres | **Pass** locally; CI job `live-e2e` |
-| `go test ./...` + Postgres e2e + concurrent seq | Pass |
-| `govulncheck` on Go 1.26.10 | Pass (0 vulns) |
-| WS auth bounds / TLS / origin / token redaction | Implemented + tested |
-| Enrollment lifecycle states | Implemented + tested |
-| Android emulator OpenMLS suite | Pass |
-| iOS | macOS CI `ios-compile` + OpenMLS unit tests (gate via Actions) |
-| GitHub Actions | **Pass** (`go`, `flutter`, `ios-compile`, `live-e2e`) |
-
-## Logout / history policy
-
-Logout destroys MLS keys and marks enrollment **revoked**. Local encrypted DB ciphertext may remain but cannot be decrypted. Re-login enrolls a **new** identity — prior history is not recoverable. See `docs/E2EE_C4_REPORT.md`.
+| `internal/calling` unit + Postgres integration | Pass |
+| Calling HTTP handler tests | Pass |
+| `go test ./...` | Pass |
+| Migration `000008_calling` | Applied on local Docker |
+| Flutter WebRTC / UI | Not in D1 |
+| Two-client media | Not in D1 |
 
 ## Next
 
-Product review of C4 / residual limitations → only then Milestone D.
+Review D1 → then D2 WebRTC clients. Do not mark Milestone D complete until D6/D7 gates pass.

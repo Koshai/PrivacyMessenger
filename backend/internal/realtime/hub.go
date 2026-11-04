@@ -15,6 +15,7 @@ type Event struct {
 	ConversationID string `json:"conversation_id,omitempty"`
 	Cursor         string `json:"cursor,omitempty"`
 	Reason         string `json:"reason,omitempty"`
+	CallID         string `json:"call_id,omitempty"`
 }
 
 type CloseFunc func(reason string)

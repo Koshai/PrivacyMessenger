@@ -19,6 +19,7 @@ type SessionDisconnecter interface {
 type LogoutHandler struct {
 	revoker      SessionRevoker
 	disconnecter SessionDisconnecter
+	callEnder    CallTerminator
 }
 
 func NewLogoutHandler(
@@ -32,11 +33,17 @@ func (h *LogoutHandler) WithDisconnecter(d SessionDisconnecter) *LogoutHandler {
 	return h
 }
 
+func (h *LogoutHandler) WithCallEnder(c CallTerminator) *LogoutHandler {
+	h.callEnder = c
+	return h
+}
+
 func (h *LogoutHandler) Logout(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
-	if _, ok := SessionFromContext(r.Context()); !ok {
+	session, ok := SessionFromContext(r.Context())
+	if !ok {
 		http.Error(
 			w,
 			"authentication required",
@@ -82,6 +89,10 @@ func (h *LogoutHandler) Logout(
 			http.StatusInternalServerError,
 		)
 		return
+	}
+
+	if h.callEnder != nil {
+		_ = h.callEnder.EndCallsForUser(r.Context(), session.UserID)
 	}
 
 	if h.disconnecter != nil {

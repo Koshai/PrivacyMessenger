@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"example.com/private-messenger/backend/internal/auth"
+	"example.com/private-messenger/backend/internal/calling"
 	"example.com/private-messenger/backend/internal/config"
 	appcrypto "example.com/private-messenger/backend/internal/crypto"
 	"example.com/private-messenger/backend/internal/friends"
@@ -109,7 +110,6 @@ func main() {
 
 	hub := realtime.NewHub()
 	realtimeHandler := httpapi.NewRealtimeHandler(hub, sessionRepository)
-	logoutHandler := httpapi.NewLogoutHandler(sessionRepository).WithDisconnecter(realtimeHandler)
 
 	friendsService := friends.NewService(db)
 	friendsHandler := httpapi.NewFriendsHandler(friendsService)
@@ -127,6 +127,29 @@ func main() {
 		appcrypto.NewPostgresDeviceOwnerChecker(db),
 	)
 	cryptoHandler := httpapi.NewCryptoHandler(cryptoService)
+
+	callingService := calling.NewService(
+		calling.NewRepository(db),
+		messaging.NewPostgresFriendshipChecker(db),
+		calling.NewPostgresBlockChecker(db),
+	)
+	callingHandler := httpapi.NewCallingHandler(callingService, hub)
+	callingService.WithNotifier(callingHandler)
+
+	logoutHandler := httpapi.NewLogoutHandler(sessionRepository).
+		WithDisconnecter(realtimeHandler).
+		WithCallEnder(callingService)
+
+	// Expire unanswered ringing calls (D1 timeout handling).
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if _, err := callingService.ExpireRinging(context.Background()); err != nil {
+				log.Printf("call ring expiry: %v", err)
+			}
+		}
+	}()
 
 	tlsCert := strings.TrimSpace(os.Getenv("TLS_CERT_FILE"))
 	tlsKey := strings.TrimSpace(os.Getenv("TLS_KEY_FILE"))
@@ -146,6 +169,7 @@ func main() {
 			MessagingHandler:     messagingHandler,
 			CryptoHandler:        cryptoHandler,
 			RealtimeHandler:      realtimeHandler,
+			CallingHandler:       callingHandler,
 		},
 	)
 

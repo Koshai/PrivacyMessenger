@@ -16,6 +16,7 @@ type RouterDependencies struct {
 	MessagingHandler     *MessagingHandler
 	CryptoHandler        *CryptoHandler
 	RealtimeHandler      *RealtimeHandler
+	CallingHandler       *CallingHandler
 }
 
 // NewConfiguredRouter is the central router factory.
@@ -100,6 +101,14 @@ func NewConfiguredRouter(
 				mux,
 				deps.SessionAuthenticator,
 				deps.RealtimeHandler,
+			)
+		}
+
+		if deps.CallingHandler != nil {
+			RegisterCallingRoutes(
+				mux,
+				deps.SessionAuthenticator,
+				deps.CallingHandler,
 			)
 		}
 	}
