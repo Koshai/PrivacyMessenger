@@ -162,6 +162,7 @@ jobs:
             --use-auth-secret \
             --static-auth-secret=local-dev-turn-secret \
             --realm=privacy.test \
+            --external-ip=127.0.0.1 \
             --min-port=49160 --max-port=49200 \
             --no-cli --no-multicast-peers
           sleep 2
@@ -173,6 +174,9 @@ jobs:
           TURN_TEST_SECRET: local-dev-turn-secret
           TURN_TEST_URL: turn:127.0.0.1:3478?transport=udp
         run: go test ./internal/turn/ -count=1 -run TestRelayOnlyDataChannel -v
+      - name: Coturn logs
+        if: failure()
+        run: docker logs pm-coturn | tail -n 80
       - name: Stop coturn
         if: always()
         run: docker rm -f pm-coturn || true
