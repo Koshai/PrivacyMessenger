@@ -23,6 +23,33 @@ class CallAuthPhase {
 
 const callHelloDomain = 'PrivacyMessenger/call-hello/v1\n';
 const callConfirmDomain = 'PrivacyMessenger/call-auth/v1\n';
+const callKeyBindingDomain = 'PrivacyMessenger/call-key-binding/v1\n';
+
+enum CallAuthFailure {
+  none,
+  malformed,
+  mismatch,
+  replay,
+  unexpectedKey,
+  badSignature,
+  unbound,
+  revoked,
+}
+
+class CallCheck {
+  const CallCheck(this.failure, {this.error});
+
+  final CallAuthFailure failure;
+  final String? error;
+
+  bool get ok => failure == CallAuthFailure.none;
+
+  String get phase => switch (failure) {
+        CallAuthFailure.none => CallAuthPhase.authenticated,
+        CallAuthFailure.unexpectedKey => CallAuthPhase.identityChanged,
+        _ => CallAuthPhase.failed,
+      };
+}
 
 class CallTranscript {
   CallTranscript({
@@ -193,6 +220,179 @@ class CallAuthOutcome {
 }
 
 typedef CallAuthenticator = Future<CallAuthOutcome> Function(CallAuthRequest request);
+
+/// Local check of a hello. The signature is verified here; a server
+/// acceptance is not evidence. [pinnedCallKey] rejects a replacement key
+/// even when the new key signs the frame correctly.
+Future<CallCheck> verifyPeerHello({
+  required String callId,
+  required String userId,
+  required String deviceId,
+  required int role,
+  required List<int> nonce,
+  required List<int> callKey,
+  required List<int> mls,
+  required List<int> signature,
+  required String expectedCallId,
+  required String expectedUserId,
+  required String expectedDeviceId,
+  required int expectedRole,
+  List<int>? pinnedCallKey,
+  Set<String> seenNonces = const {},
+}) async {
+  if (nonce.length != 32 || callKey.length != 32 || mls.length != 32 || signature.length != 64 ||
+      role != 1 && role != 2) {
+    return const CallCheck(CallAuthFailure.malformed, error: 'Malformed hello');
+  }
+  final nonceHex = _hex(nonce);
+  if (seenNonces.contains(nonceHex)) {
+    return const CallCheck(CallAuthFailure.replay, error: 'Replayed hello');
+  }
+  Uint8List message;
+  try {
+    message = helloBytes(
+      callId: callId,
+      userId: userId,
+      deviceId: deviceId,
+      role: role,
+      nonce: nonce,
+      callKey: callKey,
+      mls: mls,
+    );
+  } on FormatException {
+    return const CallCheck(CallAuthFailure.malformed, error: 'Malformed hello');
+  }
+  final signed = await verifyEd25519(publicKey: callKey, message: message, signature: signature);
+  if (!signed) {
+    return const CallCheck(CallAuthFailure.badSignature, error: 'Hello signature rejected');
+  }
+  if (callId != expectedCallId ||
+      userId != expectedUserId ||
+      deviceId != expectedDeviceId ||
+      role != expectedRole) {
+    return const CallCheck(CallAuthFailure.mismatch, error: 'Hello does not match this call');
+  }
+  if (pinnedCallKey != null && !_eq(pinnedCallKey, callKey)) {
+    return const CallCheck(
+      CallAuthFailure.unexpectedKey,
+      error: 'Identity changed. Compare safety numbers before trusting this device.',
+    );
+  }
+  return const CallCheck(CallAuthFailure.none);
+}
+
+Uint8List bindingStatementBytes({
+  required String userId,
+  required String deviceId,
+  required List<int> callKey,
+  required List<int> mls,
+}) {
+  final out = BytesBuilder(copy: false);
+  out.add(utf8.encode(callKeyBindingDomain));
+  out.add([1]);
+  out.add(uuidBytes(userId));
+  out.add(uuidBytes(deviceId));
+  out.add(_fixed(callKey, 32));
+  out.add(_fixed(mls, 32));
+  return out.toBytes();
+}
+
+/// The statement must be signed by the call key and must match the hello.
+/// Pins come from the local trust store. A server-reported fingerprint is not an input.
+Future<CallCheck> verifyCallKeyBinding({
+  required List<int> statement,
+  required List<int> signature,
+  required String expectedUserId,
+  required String expectedDeviceId,
+  required List<int> helloCallKey,
+  String? pinnedMlsHex,
+  List<int>? pinnedCallKey,
+  String? pinnedDeviceForUser,
+}) async {
+  if (signature.length != 64) {
+    return const CallCheck(CallAuthFailure.malformed, error: 'Malformed key binding');
+  }
+  if (pinnedDeviceForUser != null && pinnedDeviceForUser != expectedDeviceId) {
+    return const CallCheck(
+      CallAuthFailure.unexpectedKey,
+      error: 'This contact is using a different device. Compare safety numbers.',
+    );
+  }
+  final ok = await verifyEd25519(
+    publicKey: helloCallKey,
+    message: statement,
+    signature: signature,
+  );
+  if (!ok) {
+    return const CallCheck(CallAuthFailure.badSignature, error: 'Call-key binding rejected');
+  }
+  if (!_statementMatches(
+    statement: statement,
+    userId: expectedUserId,
+    deviceId: expectedDeviceId,
+    callKey: helloCallKey,
+  )) {
+    return const CallCheck(CallAuthFailure.unbound, error: 'Call key binding does not match the hello');
+  }
+  if (pinnedCallKey != null && !_eq(pinnedCallKey, helloCallKey)) {
+    return const CallCheck(
+      CallAuthFailure.unexpectedKey,
+      error: 'Identity changed. Compare safety numbers before trusting this device.',
+    );
+  }
+  if (pinnedMlsHex != null) {
+    try {
+      if (!_eq(_mlsFromStatement(statement), _hexToBytes(pinnedMlsHex))) {
+        return const CallCheck(
+          CallAuthFailure.unexpectedKey,
+          error: 'Call key is not bound to the pinned messaging identity.',
+        );
+      }
+    } on FormatException {
+      return const CallCheck(CallAuthFailure.malformed, error: 'Malformed key binding');
+    }
+  }
+  return const CallCheck(CallAuthFailure.none);
+}
+
+bool _statementMatches({
+  required List<int> statement,
+  required String userId,
+  required String deviceId,
+  required List<int> callKey,
+}) {
+  Uint8List expected;
+  try {
+    expected = bindingStatementBytes(
+      userId: userId,
+      deviceId: deviceId,
+      callKey: callKey,
+      mls: _mlsFromStatement(statement),
+    );
+  } on FormatException {
+    return false;
+  }
+  return _eq(expected, statement);
+}
+
+List<int> _mlsFromStatement(List<int> statement) {
+  if (statement.length < 32) {
+    throw const FormatException('binding');
+  }
+  return statement.sublist(statement.length - 32);
+}
+
+List<int> _hexToBytes(String hex) {
+  final clean = hex.trim().toLowerCase();
+  if (clean.length != 64) throw const FormatException('fingerprint');
+  final out = Uint8List(32);
+  for (var i = 0; i < 32; i++) {
+    out[i] = int.parse(clean.substring(i * 2, i * 2 + 2), radix: 16);
+  }
+  return out;
+}
+
+String _hex(List<int> bytes) => bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
 List<int>? parseSdpFingerprint(String? sdp) {
   if (sdp == null) return null;

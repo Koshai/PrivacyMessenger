@@ -15,6 +15,8 @@ import 'core/theme/app_theme.dart';
 
 import 'features/calling/call_auth.dart';
 import 'features/calling/call_auth_session.dart';
+import 'features/calling/call_key_binding.dart';
+import 'features/calling/call_platform.dart';
 import 'features/calling/call_controller.dart';
 import 'features/calling/call_screens.dart';
 import 'features/calling/calling_api_client.dart';
@@ -188,19 +190,32 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
           );
         }
         _calls.localSafetyFingerprintHex = record.fingerprintHex;
+        final channel = MlsCallKeyChannel(
+          api: widget.apiClient,
+          mls: widget.mls,
+          token: () => _token,
+        );
         return CallAuthSession(
           api: callingApi,
           token: () => _token,
           userId: userId,
           deviceId: deviceId,
           localMlsFingerprintHex: record.fingerprintHex,
-          peerIdentities: (id) => widget.apiClient.peerIdentities(
-            token: _token,
-            peerUserId: id,
-          ),
+          bindingExchange: channel.exchange,
+          deviceStillEnrolled: (peerUser, peerDevice) async {
+            final listed = await widget.apiClient.peerIdentities(
+              token: _token,
+              peerUserId: peerUser,
+            );
+            return listed.any((e) => e.deviceId == peerDevice);
+          },
         ).run(request);
       },
     );
+    _calls.onLifecycle = CallPlatformBridge.instance.show;
+    CallPlatformBridge.instance.bind(onSystemEnded: () {
+      _calls.hangUp();
+    });
     unawaited(_bootstrap());
   }
 

@@ -19,7 +19,9 @@
 | End calls on logout/session revoke | Yes |
 | `connected` only after client-reported WebRTC indication | Yes (D1.1) — **not** server-verified media |
 | WebRTC DTLS-SRTP media encryption | **D2+** (transport when peers connect) |
-| Dedicated Ed25519 call key pinned to the MLS fingerprint | **D4** — not an MLS signature over media |
+| Dedicated Ed25519 call key, MLS-encrypted binding statement | **D4.1** — not an MLS signature over media |
+| Remote media hidden until local verification | **D4.1** |
+| In-process call notification without signaling contents | **D5** — not terminated-app ringing |
 | TURN short-lived REST credentials | **D3** — secret server-side only |
 
 ## What D2 adds
@@ -31,22 +33,20 @@
 | Dispose tracks / renderers / PC on end | Yes |
 | Injectable ICE servers (STUN + short-lived TURN) | Yes (D3) |
 | Relay-only ICE policy | Yes (D3) |
-| Reliable background ringing | **No** (D5) |
+| Reliable background ringing while the process is alive | **Partial (D5)** — notification and CallKit while the app process is running |
+| Terminated-app or locked-screen incoming calls | **Not claimed** |
 | TURN relay path exercised (local coturn + pion) | Yes (D3). Production NAT still depends on a correctly deployed coturn |
 
 ## Honest media-security statement
 
-Chat uses OpenMLS for E2EE messaging. **Calling does not inherit MLS authentication automatically.**
+Chat uses OpenMLS for E2EE messaging. Calling uses a separate Ed25519 call key. That key is bound to the device by a statement encrypted in the existing MLS conversation. WebRTC DTLS-SRTP still encrypts the media. The server is not the authority for the peer's call key.
 
-Until D4 lands:
-
-- Signaling is server-mediated and server-visible (SDP/ICE while the call is live).
-- Media encryption (DTLS-SRTP) is provided by WebRTC once peers connect — that protects media in transit between peers / relays, **not** an MLS-style identity proof by itself.
-- The server can observe call metadata: who called whom, when, duration, media type, and (while live) signaling payloads.
-- `connected` is a **client assertion**. The API records it; it does not prove bidirectional media delivery.
-- Relay (TURN) operators can see relayed packet metadata; relay-only mode (D3) reduces peer IP exposure at bandwidth cost.
-
-Do **not** claim “MLS-authenticated calls” until an explicit reviewed binding between the WebRTC peer and the trusted device identity is implemented and tested (D4).
+- Clients verify hello signatures, call id, user, device, role, and the MLS binding locally.
+- A missing authenticator fails closed. ICE connectivity is not shown as authenticated.
+- Remote playback stays off until verification. Early DTLS packets can still exist.
+- A DTLS fingerprint change or a new peer connection ends the call.
+- First contact still depends on the earlier messaging key-package trust. The signaling server cannot refresh that trust during the call.
+- `connected` remains a client assertion. It does not prove identity.
 
 ## Server metadata exposure
 
@@ -73,4 +73,4 @@ Not retained after end:
 
 ## Background ringing
 
-Reliable OS-level incoming-call UX when the app is killed is **not** claimed until demonstrated on Android/iOS (D5). D1/D2 deliver WS hints to connected/foreground clients plus HTTP reconcile.
+Reliable incoming-call UX when the process is already running uses a content-free notification on Android and CallKit on iOS. PushKit is not implemented. Apple requires a VoIP push entitlement and immediate CallKit reporting, and that path was not tested on a device. A killed process does not receive calls. Notifications are hints: the app loads authoritative call state after activation and drops expired, revoked, or duplicate calls. Notification bodies are `Incoming call` or `Call in progress` and do not contain tokens, SDP, ICE, or keys.

@@ -18,6 +18,7 @@ abstract final class MlsContentTypes {
   static const commit = 'application/mls-commit';
   static const proposal = 'application/mls-proposal';
   static const keyPackage = 'application/mls-key-package';
+  static const callKeyBinding = 'application/call-key-binding';
   static const opaque = 'application/opaque';
 
   static String forKind(MlsWireKind kind) => switch (kind) {

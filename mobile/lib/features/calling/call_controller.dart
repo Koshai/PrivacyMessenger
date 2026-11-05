@@ -48,6 +48,9 @@ class CallController extends ChangeNotifier {
   final CallAuthenticator? authenticatePeer;
   final Duration authTimeout;
 
+  /// `incoming`, `ongoing`, or `ended`. The kind carries no signaling payload.
+  void Function(String kind)? onLifecycle;
+
   String authPhase = CallAuthPhase.idle;
   String? peerFingerprintHex;
   String? authenticatedPeerDeviceId;
@@ -55,10 +58,12 @@ class CallController extends ChangeNotifier {
   bool peerManuallyVerified = false;
   List<int>? _observedRemoteDtls;
 
-  /// Remote media is shown as authenticated only after peer verification.
-  /// Tests without an authenticator keep the previous display behavior.
-  bool get remoteMediaAuthenticated =>
-      authenticatePeer == null || authPhase == CallAuthPhase.authenticated;
+  /// Remote media is authenticated only after peer verification.
+  /// A missing authenticator is not a bypass.
+  bool get remoteMediaAuthenticated => authPhase == CallAuthPhase.authenticated;
+
+  /// coarse, user-visible link state. Not a proof of identity.
+  String linkQuality = 'idle';
 
   CallPhase phase = CallPhase.idle;
   CallSession? session;
@@ -83,6 +88,23 @@ class CallController extends ChangeNotifier {
   int _generation = 0;
   bool _ending = false;
   bool _mediaReleased = false;
+
+  String? _lifecycleKind;
+
+  @override
+  void notifyListeners() {
+    super.notifyListeners();
+    final kind = switch (phase) {
+      CallPhase.incomingRinging => 'incoming',
+      CallPhase.outgoingRinging || CallPhase.connecting || CallPhase.connected => 'ongoing',
+      _ => 'ended',
+    };
+    if (phase == CallPhase.idle && _lifecycleKind == null) return;
+    if (_lifecycleKind == kind) return;
+    _lifecycleKind = kind;
+    final hook = onLifecycle;
+    if (hook != null) hook(kind);
+  }
 
   Duration get duration {
     if (connectedAt == null) return Duration.zero;
@@ -346,6 +368,7 @@ class CallController extends ChangeNotifier {
         return;
       }
       notifyListeners();
+      await media.setRemotePlaybackEnabled(true);
     } catch (e) {
       if (!_isCurrent(generation)) return;
       authPhase = CallAuthPhase.failed;
@@ -360,6 +383,7 @@ class CallController extends ChangeNotifier {
     _ending = false;
     _mediaReleased = false;
     localMediaConnected = false;
+    linkQuality = 'idle';
     authPhase = CallAuthPhase.idle;
     peerFingerprintHex = null;
     authenticatedPeerDeviceId = null;
@@ -462,24 +486,43 @@ class CallController extends ChangeNotifier {
         if (!_isCurrent(gen)) return;
         _disconnectTimer?.cancel();
         localMediaConnected = true;
+        linkQuality = 'good';
         phase = CallPhase.connected;
         connectedAt ??= DateTime.now().toUtc();
         notifyListeners();
         if (callId != null) {
           unawaited(api.markConnected(token: tokenProvider(), callId: callId));
         }
-        if (authenticatePeer != null) {
-          unawaited(_runAuth(gen));
+        unawaited(media.setRemotePlaybackEnabled(false));
+        if (authenticatePeer == null) {
+          authPhase = CallAuthPhase.failed;
+          error = 'Authentication unavailable';
+          notifyListeners();
+          unawaited(hangUp());
+          return;
         }
+        unawaited(_runAuth(gen));
       case CallMediaEventKind.connectionFailed:
         if (!_isCurrent(gen)) return;
+        linkQuality = 'lost';
         error = 'Connection failed';
         phase = CallPhase.failed;
         notifyListeners();
         unawaited(hangUp());
       case CallMediaEventKind.connectionDisconnected:
         if (!_isCurrent(gen)) return;
+        linkQuality = 'poor';
         _armDisconnectTimeout(gen);
+      case CallMediaEventKind.remoteFingerprint:
+        final fingerprint = event.dtlsFingerprint;
+        if (fingerprint != null) unawaited(onDtlsRestart(fingerprint));
+      case CallMediaEventKind.peerConnectionReplaced:
+        if (!_isCurrent(gen) || session == null) return;
+        if (phase == CallPhase.idle || phase == CallPhase.ended) return;
+        authPhase = CallAuthPhase.failed;
+        error = 'Peer connection replaced';
+        notifyListeners();
+        unawaited(hangUp());
     }
   }
 
@@ -520,7 +563,10 @@ class CallController extends ChangeNotifier {
 
   void _startPollingIce() {
     _poll?.cancel();
-    _poll = Timer.periodic(const Duration(seconds: 1), (_) => _pullIce());
+    _poll = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (phase == CallPhase.connected) notifyListeners();
+      unawaited(_pullIce());
+    });
   }
 
   Future<void> _pullIce() async {

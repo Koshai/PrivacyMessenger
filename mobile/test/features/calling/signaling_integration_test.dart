@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:private_messenger/features/calling/call_auth.dart';
 import 'package:private_messenger/features/calling/call_controller.dart';
 import 'package:private_messenger/features/calling/calling_api_client.dart';
 import 'package:private_messenger/features/calling/fake_call_service.dart';
@@ -80,6 +81,8 @@ void main() {
       myUserId: 'alice',
       tokenProvider: () => 'a',
       requestPermissions: (_) async => true,
+      authenticatePeer: (_) async =>
+          const CallAuthOutcome(phase: CallAuthPhase.authenticated),
     );
     final bob = CallController(
       api: CallingApiClient(client: MockClient((r) async => handle(r)), baseUri: Uri.parse('http://sig')),
@@ -87,6 +90,8 @@ void main() {
       myUserId: 'bob',
       tokenProvider: () => 'b',
       requestPermissions: (_) async => true,
+      authenticatePeer: (_) async =>
+          const CallAuthOutcome(phase: CallAuthPhase.authenticated),
     );
 
     await alice.startOutgoing(peerUserId: 'bob', mediaType: CallMediaType.audio);

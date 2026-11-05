@@ -21,6 +21,8 @@ class FakeCallService implements CallService {
   String? failCandidateContaining;
   final List<String> remoteIce = [];
   int applyAnswerCount = 0;
+  bool remotePlayback = false;
+  int peerConnectionReplacements = 0;
 
   @override
   Stream<CallMediaEvent> get events => _events.stream;
@@ -88,6 +90,10 @@ class FakeCallService implements CallService {
   Future<void> applyRemoteAnswer(String sdp) async {
     remoteAnswer = sdp;
     applyAnswerCount++;
+    _events.add(CallMediaEvent(
+      kind: CallMediaEventKind.remoteFingerprint,
+      dtlsFingerprint: List<int>.from(remoteDtls),
+    ));
   }
 
   @override
@@ -126,6 +132,16 @@ class FakeCallService implements CallService {
   @override
   Future<({List<int> local, List<int> remote})?> dtlsFingerprints() async {
     return (local: localDtls, remote: remoteDtls);
+  }
+
+  @override
+  Future<void> setRemotePlaybackEnabled(bool enabled) async {
+    remotePlayback = enabled;
+  }
+
+  void replacePeerConnection() {
+    peerConnectionReplacements++;
+    _events.add(const CallMediaEvent(kind: CallMediaEventKind.peerConnectionReplaced));
   }
 
   @override

@@ -46,9 +46,27 @@ Signatures are Ed25519 over those bytes.
 5. ICE `connected` does not mark the call authenticated. Remote video stays hidden until this check passes. DTLS may already have carried early packets; those are not presented as an authenticated call.
 6. Failure, identity change, timeout, or a DTLS fingerprint change after verification ends the call and releases media.
 
+## D4.1 local verification
+
+Clients verify every hello themselves. The signed fields must be the expected call id, peer user, peer device, and role. A hello that is valid for a different call, a replaced key, a bad signature, a short nonce, or a repeated nonce is rejected. Server acceptance is not verification.
+
+The call public key is bound to the messaging identity by a versioned statement:
+
+`PrivacyMessenger/call-key-binding/v1\n || version || user || device || call public key || MLS fingerprint`
+
+The statement is signed by the call key and encrypted as an MLS application message (`application/call-key-binding`) in the existing conversation. The recipient accepts it only after OpenMLS decrypts it. A fingerprint returned by the signaling server, or by `GET /crypto/users/{id}/identities` during the call, is not that binding. The identity list is used only to notice that a device is no longer enrolled.
+
+Existing pins are kept. A different call key, MLS fingerprint, or device id for the same user is an identity change and does not replace the pin. Manual safety-number verification stays a separate flag.
+
+First contact: if no MLS group exists, there is no trust channel and the call fails closed. Establishing the messaging group still trusts the key package once, outside the call. That TOFU step is not repeated by the signaling server during the call.
+
+## Media before verification
+
+DTLS and ICE can run before the confirm finishes. Incoming tracks are disabled and the remote renderer is not attached until verification succeeds. If a platform delivers audio in the gap before the track callback, it is disabled there. That early transport is not an authenticated call.
+
 ## Renegotiation and ICE restart
 
-ICE restart that keeps the same DTLS certificates does not change the signed fingerprints and does not require a new signature. A new DTLS certificate (offer/answer renegotiation that changes `a=fingerprint`) invalidates the transcript. D4 fails closed instead of silently re-authenticating.
+ICE restart that keeps the same DTLS certificates does not change the signed fingerprints and does not require a new signature. A new DTLS certificate (offer/answer renegotiation that changes `a=fingerprint`) is reported by the peer connection and ends the call. Replacing the peer connection invalidates authentication. D4 does not silently re-authenticate.
 
 ## Server
 

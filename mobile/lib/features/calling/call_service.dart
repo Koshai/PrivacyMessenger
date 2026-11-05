@@ -35,6 +35,9 @@ abstract class CallService {
   /// SHA-256 DTLS fingerprints from the local and remote descriptions.
   Future<({List<int> local, List<int> remote})?> dtlsFingerprints() async => null;
 
+  /// Remote tracks stay disabled until authentication succeeds.
+  Future<void> setRemotePlaybackEnabled(bool enabled) async {}
+
   Future<void> disposeMedia();
 }
 
@@ -43,6 +46,8 @@ enum CallMediaEventKind {
   connectionConnected,
   connectionFailed,
   connectionDisconnected,
+  remoteFingerprint,
+  peerConnectionReplaced,
 }
 
 class CallMediaEvent {
@@ -52,6 +57,7 @@ class CallMediaEvent {
     this.sdpMid,
     this.sdpMLineIndex,
     this.clientIceId,
+    this.dtlsFingerprint,
   });
 
   final CallMediaEventKind kind;
@@ -59,4 +65,5 @@ class CallMediaEvent {
   final String? sdpMid;
   final int? sdpMLineIndex;
   final String? clientIceId;
+  final List<int>? dtlsFingerprint;
 }

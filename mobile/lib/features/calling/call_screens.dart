@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../messaging/safety_number_screen.dart';
 import 'call_auth.dart';
@@ -78,13 +79,27 @@ class ActiveCallScreen extends StatelessWidget {
                           title,
                           style: const TextStyle(color: Colors.white, fontSize: 22),
                         ),
+                        const SizedBox(height: 8),
+                        Text(
+                          _statusLine(controller),
+                          style: const TextStyle(color: Colors.white60),
+                        ),
                         if (controller.error != null)
                           Padding(
                             padding: const EdgeInsets.all(16),
-                            child: Text(
-                              controller.error!,
-                              style: const TextStyle(color: Colors.orangeAccent),
-                              textAlign: TextAlign.center,
+                            child: Column(
+                              children: [
+                                Text(
+                                  controller.error!,
+                                  style: const TextStyle(color: Colors.orangeAccent),
+                                  textAlign: TextAlign.center,
+                                ),
+                                if (controller.error!.toLowerCase().contains('permission'))
+                                  TextButton(
+                                    onPressed: openAppSettings,
+                                    child: const Text('Open settings'),
+                                  ),
+                              ],
                             ),
                           ),
                       ],
@@ -156,6 +171,20 @@ class ActiveCallScreen extends StatelessWidget {
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
     final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
     return '$m:$s';
+  }
+
+  static String _statusLine(CallController controller) {
+    final quality = switch (controller.linkQuality) {
+      'good' => 'Connection good',
+      'poor' => 'Connection unstable',
+      'lost' => 'Connection lost',
+      _ => 'Waiting for media',
+    };
+    if (controller.phase == CallPhase.connected && controller.remoteMediaAuthenticated) {
+      return '${_formatDuration(controller.duration)} · $quality';
+    }
+    if (controller.phase == CallPhase.connected) return 'Verifying identity · $quality';
+    return quality;
   }
 }
 
@@ -267,7 +296,7 @@ class _RoundButton extends StatelessWidget {
           child: IconButton(
             iconSize: 32,
             color: Colors.white,
-            icon: Icon(icon),
+            icon: Icon(icon, semanticLabel: label),
             tooltip: label,
             onPressed: onPressed,
           ),

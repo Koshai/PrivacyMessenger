@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:private_messenger/features/calling/call_auth.dart';
 import 'package:private_messenger/features/calling/call_controller.dart';
 import 'package:private_messenger/features/calling/call_service.dart';
 import 'package:private_messenger/features/calling/calling_api_client.dart';
@@ -43,6 +44,8 @@ CallController _controller({
   String myUserId = 'alice',
   Stream<Map<String, dynamic>>? hints,
   Future<bool> Function(CallMediaType)? permissions,
+  CallAuthenticator? authenticatePeer,
+  bool injectAuthenticator = true,
 }) {
   return CallController(
     api: CallingApiClient(client: client, baseUri: Uri.parse('http://example.test')),
@@ -51,6 +54,10 @@ CallController _controller({
     tokenProvider: () => 'tok',
     hintEvents: hints,
     requestPermissions: permissions ?? (_) async => true,
+    authenticatePeer: injectAuthenticator
+        ? (authenticatePeer ??
+            (_) async => const CallAuthOutcome(phase: CallAuthPhase.authenticated))
+        : null,
   );
 }
 
@@ -475,6 +482,8 @@ void main() {
       tokenProvider: () => 'tok',
       requestPermissions: (_) async => true,
       disconnectGrace: const Duration(milliseconds: 80),
+      authenticatePeer: (_) async =>
+          const CallAuthOutcome(phase: CallAuthPhase.authenticated),
     );
     controller.phase = CallPhase.connecting;
     controller.session = CallSession.fromJson(_sessionJson(state: 'accepted'));

@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 
+import '../calling/call_auth_session.dart';
 import '../../core/crypto/mls_session_manager.dart';
 import '../../core/crypto/protocol_messages.dart';
 import '../../core/network/api_client.dart' show ApiClient, ApiException;
@@ -61,7 +63,11 @@ class EncryptedConversationService {
     try {
       final claimed =
           await api.claimKeyPackage(token: token, peerUserId: peerUserId);
-      _trackFingerprint(peerUserId, claimed.fingerprintHex);
+      _trackFingerprint(
+        peerUserId,
+        claimed.fingerprintHex,
+        deviceId: claimed.deviceId,
+      );
 
       final groupId = await svc.createGroup();
       final invite = await svc.addMember(
@@ -220,6 +226,15 @@ class EncryptedConversationService {
         messageBytes: env.ciphertext,
       );
 
+      if (env.contentType == MlsContentTypes.callKeyBinding) {
+        if (decrypted == null) {
+          throw StateError('call key binding produced no plaintext');
+        }
+        await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
+        _processedEnvelopeIds.add(env.id);
+        return;
+      }
+
       if (env.contentType == MlsContentTypes.application) {
         if (decrypted == null) {
           // Failed crypto must not silently ack/discard (C4).
@@ -277,12 +292,15 @@ class EncryptedConversationService {
     return false;
   }
 
-  void _trackFingerprint(String peerUserId, String fingerprint) {
+  void _trackFingerprint(String peerUserId, String fingerprint, {String? deviceId}) {
     final prior = _knownFingerprints[peerUserId];
     if (prior != null && prior != fingerprint) {
       keyChangeWarning =
           'Safety number changed for this contact. Verify before continuing.';
     }
     _knownFingerprints[peerUserId] = fingerprint;
+    if (deviceId != null) {
+      unawaited(persistMessagingDevicePin(deviceId, fingerprint));
+    }
   }
 }

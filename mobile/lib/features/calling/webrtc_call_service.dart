@@ -25,6 +25,8 @@ class WebRtcCallService implements CallService {
 
   RTCPeerConnection? _pc;
   MediaStream? _local;
+  MediaStream? _remoteStream;
+  bool _remotePlayback = false;
   bool _renderersReady = false;
   int _iceSeq = 0;
   bool _videoActive = false;
@@ -78,6 +80,9 @@ class WebRtcCallService implements CallService {
 
   Future<void> _prepare({required bool enableVideo}) async {
     final ice = await _resolveIce();
+    if (_pc != null) {
+      _events.add(const CallMediaEvent(kind: CallMediaEventKind.peerConnectionReplaced));
+    }
     await disposeMedia();
     await _ensureRenderers();
     _pc = await createPeerConnection({
@@ -110,8 +115,15 @@ class WebRtcCallService implements CallService {
       }
     };
     _pc!.onTrack = (RTCTrackEvent event) {
+      event.track.enabled = _remotePlayback;
       if (event.streams.isNotEmpty) {
-        _remoteRenderer.srcObject = event.streams.first;
+        _remoteStream = event.streams.first;
+      }
+      for (final track in _remoteStream?.getTracks() ?? const <MediaStreamTrack>[]) {
+        track.enabled = _remotePlayback;
+      }
+      if (_remotePlayback && _remoteStream != null) {
+        _remoteRenderer.srcObject = _remoteStream;
       }
     };
 
@@ -155,6 +167,7 @@ class WebRtcCallService implements CallService {
   @override
   Future<void> applyRemoteOffer(String sdp) async {
     await _pc!.setRemoteDescription(RTCSessionDescription(sdp, 'offer'));
+    await _noteRemoteFingerprint();
   }
 
   @override
@@ -167,6 +180,7 @@ class WebRtcCallService implements CallService {
   @override
   Future<void> applyRemoteAnswer(String sdp) async {
     await _pc!.setRemoteDescription(RTCSessionDescription(sdp, 'answer'));
+    await _noteRemoteFingerprint();
   }
 
   @override
@@ -205,6 +219,24 @@ class WebRtcCallService implements CallService {
   }
 
   @override
+  Future<void> setRemotePlaybackEnabled(bool enabled) async {
+    _remotePlayback = enabled;
+    for (final track in _remoteStream?.getTracks() ?? const <MediaStreamTrack>[]) {
+      track.enabled = enabled;
+    }
+    _remoteRenderer.srcObject = enabled ? _remoteStream : null;
+  }
+
+  Future<void> _noteRemoteFingerprint() async {
+    final remote = parseSdpFingerprint((await _pc?.getRemoteDescription())?.sdp);
+    if (remote == null) return;
+    _events.add(CallMediaEvent(
+      kind: CallMediaEventKind.remoteFingerprint,
+      dtlsFingerprint: remote,
+    ));
+  }
+
+  @override
   Future<({List<int> local, List<int> remote})?> dtlsFingerprints() async {
     final local = parseSdpFingerprint((await _pc?.getLocalDescription())?.sdp);
     final remote = parseSdpFingerprint((await _pc?.getRemoteDescription())?.sdp);
@@ -221,6 +253,8 @@ class WebRtcCallService implements CallService {
     _local = null;
     await _pc?.close();
     _pc = null;
+    _remoteStream = null;
+    _remotePlayback = false;
     _localRenderer.srcObject = null;
     _remoteRenderer.srcObject = null;
     _videoActive = false;

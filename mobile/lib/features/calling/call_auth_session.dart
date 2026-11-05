@@ -8,6 +8,52 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'call_auth.dart';
 import 'calling_api_client.dart';
 
+/// In-memory stand-in for tests. Production uses [SecureCallAuthStore].
+class MemoryCallAuthStore implements CallAuthStore {
+  final Map<String, String> values = {};
+
+  @override
+  Future<String?> read(String key) async => values[key];
+
+  @override
+  Future<void> write(String key, String value) async {
+    values[key] = value;
+  }
+}
+
+abstract class CallAuthStore {
+  Future<String?> read(String key);
+  Future<void> write(String key, String value);
+}
+
+class SecureCallAuthStore implements CallAuthStore {
+  SecureCallAuthStore([FlutterSecureStorage? storage])
+      : _storage = storage ?? const FlutterSecureStorage(aOptions: AndroidOptions());
+
+  final FlutterSecureStorage _storage;
+
+  @override
+  Future<String?> read(String key) => _storage.read(key: key);
+
+  @override
+  Future<void> write(String key, String value) => _storage.write(key: key, value: value);
+}
+
+class PeerBinding {
+  const PeerBinding({required this.statement, required this.signature});
+
+  final List<int> statement;
+  final List<int> signature;
+}
+
+/// Publishes our binding and returns the peer binding after MLS decrypt.
+typedef CallKeyBindingExchange = Future<PeerBinding?> Function({
+  required String peerUserId,
+  required String peerDeviceId,
+  required List<int> localStatement,
+  required List<int> localSignature,
+});
+
 /// Runs the hello/confirm handshake for one peer connection.
 class CallAuthSession {
   CallAuthSession({
@@ -16,19 +62,24 @@ class CallAuthSession {
     required this.userId,
     required this.deviceId,
     required this.localMlsFingerprintHex,
-    this.peerIdentities,
-    FlutterSecureStorage? storage,
+    this.bindingExchange,
+    this.deviceStillEnrolled,
+    CallAuthStore? store,
     this.manualTrust = const {},
-  }) : _storage = storage ?? const FlutterSecureStorage(aOptions: AndroidOptions());
+  }) : _store = store ?? SecureCallAuthStore();
 
   final CallingApiClient api;
   final String Function() token;
   final String userId;
   final String deviceId;
   final String localMlsFingerprintHex;
-  final Future<List<({String deviceId, String fingerprintHex})>> Function(String peerUserId)?
-      peerIdentities;
-  final FlutterSecureStorage _storage;
+  final CallKeyBindingExchange? bindingExchange;
+
+  /// False when the peer device is revoked or no longer enrolled.
+  /// This is not a fingerprint comparison.
+  final Future<bool> Function(String peerUserId, String peerDeviceId)? deviceStillEnrolled;
+  final CallAuthStore _store;
+  final Set<String> _seenNonces = {};
 
   /// deviceId -> user marked the safety number verified.
   final Set<String> manualTrust;
@@ -65,11 +116,34 @@ class CallAuthSession {
       },
     );
 
+    final exchange = bindingExchange;
+    if (exchange == null) {
+      return const CallAuthOutcome(
+        phase: CallAuthPhase.failed,
+        error: 'Call-key binding channel is not configured',
+      );
+    }
+    final localStatement = bindingStatementBytes(
+      userId: userId,
+      deviceId: deviceId,
+      callKey: public,
+      mls: mls,
+    );
+    final localBindingSig = await Ed25519().sign(localStatement, keyPair: pair);
+
+    final peerUser = request.iAmCaller ? request.session.calleeUserId : request.session.callerUserId;
+    final peerDeviceExpected =
+        request.iAmCaller ? request.session.calleeDeviceId : request.session.callerDeviceId;
+    if (peerDeviceExpected == null || peerDeviceExpected.isEmpty) {
+      return const CallAuthOutcome(phase: CallAuthPhase.failed, error: 'Peer device is not bound to this call');
+    }
+    final peerRole = request.iAmCaller ? 2 : 1;
+
     Map<String, dynamic>? peerHello;
     for (var i = 0; i < 20; i++) {
       final frames = await api.listAuth(token: token(), callId: request.session.id);
       peerHello = frames.cast<Map<String, dynamic>?>().firstWhere(
-        (f) => f?['kind'] == 'hello' && f?['sender_device_id'] != deviceId,
+        (f) => f?['kind'] == 'hello' && f?['sender_device_id'] == peerDeviceExpected,
         orElse: () => null,
       );
       if (peerHello != null) break;
@@ -80,31 +154,69 @@ class CallAuthSession {
     }
 
     final peerKey = base64Decode(peerHello['call_public_key_b64'] as String);
-    final peerMls = _hexToBytes(peerHello['mls_fingerprint_hex'] as String);
+    final peerMlsHex = (peerHello['mls_fingerprint_hex'] as String).toLowerCase();
+    final peerMls = _hexToBytes(peerMlsHex);
     final peerNonce = base64Decode(peerHello['nonce_b64'] as String);
     final peerDevice = peerHello['sender_device_id'] as String;
-    final peerMlsHex = (peerHello['mls_fingerprint_hex'] as String).toLowerCase();
     final pinned = await _readPin(peerDevice);
-    final pinnedMls = await _storage.read(key: 'call_auth_mls_$peerDevice');
-    if ((pinned != null && !_eq(pinned, peerKey)) ||
-        (pinnedMls != null && pinnedMls.toLowerCase() != peerMlsHex)) {
+    final helloCheck = await verifyPeerHello(
+      callId: peerHello['call_id'] as String? ?? request.session.id,
+      userId: peerHello['sender_user_id'] as String? ?? '',
+      deviceId: peerDevice,
+      role: (peerHello['role'] as num?)?.toInt() ?? 0,
+      nonce: peerNonce,
+      callKey: peerKey,
+      mls: peerMls,
+      signature: base64Decode(peerHello['signature_b64'] as String),
+      expectedCallId: request.session.id,
+      expectedUserId: peerUser,
+      expectedDeviceId: peerDeviceExpected,
+      expectedRole: peerRole,
+      pinnedCallKey: pinned,
+      seenNonces: _seenNonces,
+    );
+    if (!helloCheck.ok) {
+      return CallAuthOutcome(phase: helloCheck.phase, error: helloCheck.error, peerDeviceId: peerDevice);
+    }
+    _seenNonces.add(_hex(peerNonce));
+
+    final binding = await exchange(
+      peerUserId: peerUser,
+      peerDeviceId: peerDeviceExpected,
+      localStatement: localStatement,
+      localSignature: localBindingSig.bytes,
+    );
+    if (binding == null) {
       return const CallAuthOutcome(
-        phase: CallAuthPhase.identityChanged,
-        error: 'Identity changed. Compare safety numbers before trusting this device.',
+        phase: CallAuthPhase.failed,
+        error: 'No MLS-authenticated call-key binding',
       );
     }
-    final lookup = peerIdentities;
-    if (lookup != null) {
-      final peerUser =
-          request.iAmCaller ? request.session.calleeUserId : request.session.callerUserId;
-      final listed = await lookup(peerUser);
-      final known = listed.where((e) => e.deviceId == peerDevice).toList();
-      if (known.isEmpty || known.first.fingerprintHex.toLowerCase() != peerMlsHex) {
-        return const CallAuthOutcome(
-          phase: CallAuthPhase.identityChanged,
-          error: 'Signed identity does not match the pinned messaging device.',
-        );
-      }
+    final pinnedMls = await _store.read('call_auth_mls_$peerDevice');
+    final pinnedUserDevice = await _store.read('call_auth_user_device_$peerUser');
+    final bindingCheck = await verifyCallKeyBinding(
+      statement: binding.statement,
+      signature: binding.signature,
+      expectedUserId: peerUser,
+      expectedDeviceId: peerDeviceExpected,
+      helloCallKey: peerKey,
+      pinnedMlsHex: pinnedMls,
+      pinnedCallKey: pinned,
+      pinnedDeviceForUser: pinnedUserDevice,
+    );
+    if (!bindingCheck.ok) {
+      return CallAuthOutcome(phase: bindingCheck.phase, error: bindingCheck.error, peerDeviceId: peerDevice);
+    }
+    final boundMls = binding.statement.sublist(binding.statement.length - 32);
+    if (!_eq(boundMls, peerMls)) {
+      return const CallAuthOutcome(
+        phase: CallAuthPhase.failed,
+        error: 'Hello identity does not match the MLS binding',
+      );
+    }
+    final enrolled = deviceStillEnrolled;
+    if (enrolled != null && !await enrolled(peerUser, peerDeviceExpected)) {
+      return const CallAuthOutcome(phase: CallAuthPhase.failed, error: 'Identity revoked');
     }
 
     final callerNonce = request.iAmCaller ? nonce : peerNonce;
@@ -174,9 +286,12 @@ class CallAuthSession {
       await _writePin(peerDevice, peerKey);
     }
     if (pinnedMls == null) {
-      await _storage.write(key: 'call_auth_mls_$peerDevice', value: peerMlsHex);
+      await _store.write('call_auth_mls_$peerDevice', _hex(boundMls));
     }
-    final storedManual = await _storage.read(key: 'call_auth_manual_$peerDevice') == '1';
+    if (pinnedUserDevice == null) {
+      await _store.write('call_auth_user_device_$peerUser', peerDevice);
+    }
+    final storedManual = await _store.read('call_auth_manual_$peerDevice') == '1';
     return CallAuthOutcome(
       phase: CallAuthPhase.authenticated,
       fingerprintHex: peerHello['mls_fingerprint_hex'] as String?,
@@ -187,25 +302,25 @@ class CallAuthSession {
 
   Future<SimpleKeyPair> _keyPair() async {
     final key = 'call_auth_seed_${userId}_$deviceId';
-    final existing = await _storage.read(key: key);
+    final existing = await _store.read(key);
     if (existing != null) {
       return Ed25519().newKeyPairFromSeed(base64Decode(existing));
     }
     final pair = await Ed25519().newKeyPair();
     final seed = await pair.extractPrivateKeyBytes();
     final rawSeed = seed.length == 32 ? seed : seed.sublist(0, 32);
-    await _storage.write(key: key, value: base64Encode(rawSeed));
+    await _store.write(key, base64Encode(rawSeed));
     return Ed25519().newKeyPairFromSeed(rawSeed);
   }
 
   Future<List<int>?> _readPin(String peerDevice) async {
-    final raw = await _storage.read(key: 'call_auth_pin_$peerDevice');
+    final raw = await _store.read('call_auth_pin_$peerDevice');
     if (raw == null) return null;
     return base64Decode(raw);
   }
 
   Future<void> _writePin(String peerDevice, List<int> key) {
-    return _storage.write(key: 'call_auth_pin_$peerDevice', value: base64Encode(key));
+    return _store.write('call_auth_pin_$peerDevice', base64Encode(key));
   }
 
   List<int> _hexToBytes(String hex) {
@@ -229,9 +344,23 @@ class CallAuthSession {
     }
     return v == 0;
   }
+
+  String _hex(List<int> bytes) => bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 }
 
 Future<void> persistManualCallTrust(String peerDeviceId) {
   const storage = FlutterSecureStorage(aOptions: AndroidOptions());
   return storage.write(key: 'call_auth_manual_$peerDeviceId', value: '1');
+}
+
+/// Records the messaging fingerprint pinned when a key package was claimed.
+/// Call authentication reads this pin. It is not refreshed from the server during a call.
+Future<void> persistMessagingDevicePin(String deviceId, String fingerprintHex) async {
+  try {
+    const storage = FlutterSecureStorage(aOptions: AndroidOptions());
+    await storage.write(
+      key: 'call_auth_mls_$deviceId',
+      value: fingerprintHex.toLowerCase(),
+    );
+  } catch (_) {}
 }
