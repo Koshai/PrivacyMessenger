@@ -96,6 +96,12 @@ Camera is never activated before initiation or acceptance. Video `getUserMedia` 
 
 SDP and ICE exist only while the call is non-terminal. On end they are deleted atomically with the session transition. Metadata (ids, media type, end reason, timestamps) may remain for missed-call UX.
 
+## Call authentication (D4)
+
+Dedicated Ed25519 call keys. Signed hello + confirm transcript binds call id, both users, both devices, media type, nonces, MLS fingerprints, and both DTLS fingerprints. Clients verify against pinned keys and the DTLS fingerprint on the peer connection. Protocol: `docs/CALL_AUTH_PROTOCOL.md`.
+
+ICE connected is not authentication. Remote video is hidden until verification succeeds. Authentication failure ends the call.
+
 ## NAT / TURN (D3)
 
 - `GET /calls/ice-config` (authenticated, rate-limited) returns STUN/TURN URLs and short-lived coturn REST credentials.

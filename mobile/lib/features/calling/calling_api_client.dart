@@ -140,6 +140,52 @@ class CallingApiClient {
     );
   }
 
+  Future<void> registerCallKey({
+    required String token,
+    required List<int> publicKey,
+  }) async {
+    final response = await _send(
+      () => client.post(
+        baseUri.resolve('/calls/auth-key'),
+        headers: _headers(token),
+        body: jsonEncode({'public_key_b64': base64Encode(publicKey)}),
+      ),
+    );
+    _ensure(response, ok: {204});
+  }
+
+  Future<void> submitAuth({
+    required String token,
+    required String callId,
+    required Map<String, String> body,
+  }) async {
+    final response = await _send(
+      () => client.post(
+        baseUri.resolve('/calls/$callId/auth'),
+        headers: _headers(token),
+        body: jsonEncode(body),
+      ),
+    );
+    _ensure(response, ok: {200});
+  }
+
+  Future<List<Map<String, dynamic>>> listAuth({
+    required String token,
+    required String callId,
+  }) async {
+    final response = await _send(
+      () => client.get(
+        baseUri.resolve('/calls/$callId/auth'),
+        headers: _headers(token),
+      ),
+    );
+    _ensure(response, ok: {200});
+    final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+    return (decoded['frames'] as List? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
+  }
+
   Future<CallSession?> active({required String token}) async {
     final response = await _send(
       () => client.get(

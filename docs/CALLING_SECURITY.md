@@ -19,7 +19,7 @@
 | End calls on logout/session revoke | Yes |
 | `connected` only after client-reported WebRTC indication | Yes (D1.1) — **not** server-verified media |
 | WebRTC DTLS-SRTP media encryption | **D2+** (transport when peers connect) |
-| Cryptographic call-peer binding to MLS device identity | **D4** (not claimed) |
+| Dedicated Ed25519 call key pinned to the MLS fingerprint | **D4** — not an MLS signature over media |
 | TURN short-lived REST credentials | **D3** — secret server-side only |
 
 ## What D2 adds

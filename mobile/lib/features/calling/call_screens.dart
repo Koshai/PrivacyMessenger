@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
+import '../messaging/safety_number_screen.dart';
+import 'call_auth.dart';
 import 'call_controller.dart';
 import 'models/call_session.dart';
 
@@ -23,7 +25,15 @@ class ActiveCallScreen extends StatelessWidget {
           CallPhase.outgoingRinging => 'Calling…',
           CallPhase.incomingRinging => 'Incoming call',
           CallPhase.connecting => 'Connecting…',
-          CallPhase.connected => _formatDuration(controller.duration),
+          CallPhase.connected => switch (controller.authPhase) {
+              CallAuthPhase.verifying || CallAuthPhase.awaitingPeer => 'Verifying identity…',
+              CallAuthPhase.identityChanged => 'Identity changed',
+              CallAuthPhase.failed => 'Verification failed',
+              CallAuthPhase.authenticated when controller.peerManuallyVerified =>
+                'Verified contact',
+              CallAuthPhase.authenticated => 'Authenticated device',
+              _ => _formatDuration(controller.duration),
+            },
           CallPhase.failed => 'Call failed',
           CallPhase.ended => 'Call ended',
           CallPhase.idle => 'Call',
@@ -34,9 +44,21 @@ class ActiveCallScreen extends StatelessWidget {
           body: SafeArea(
             child: Stack(
               children: [
-                if (video) ...[
+                if (video && controller.remoteMediaAuthenticated) ...[
                   Positioned.fill(
                     child: _VideoPane(renderer: controller.media.remoteRenderer),
+                  ),
+                ] else if (video) ...[
+                  const Positioned.fill(
+                    child: ColoredBox(
+                      color: Colors.black,
+                      child: Center(
+                        child: Text(
+                          'Verifying peer before showing video',
+                          style: TextStyle(color: Colors.white70),
+                        ),
+                      ),
+                    ),
                   ),
                   Positioned(
                     right: 16,
@@ -68,6 +90,54 @@ class ActiveCallScreen extends StatelessWidget {
                       ],
                     ),
                   ),
+                Positioned(
+                  left: 24,
+                  right: 24,
+                  bottom: 140,
+                  child: Column(
+                    children: [
+                      Text(
+                        controller.authPhase == CallAuthPhase.identityChanged
+                            ? 'Safety number changed. This call was ended. Compare fingerprints before trusting a new device.'
+                            : controller.peerManuallyVerified
+                                ? 'Safety number verified'
+                                : controller.authPhase == CallAuthPhase.authenticated
+                                    ? 'Authenticated device ${controller.peerFingerprintHex ?? ''}. Safety number not compared yet.'
+                                    : '',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white70),
+                      ),
+                      if (controller.authPhase == CallAuthPhase.authenticated &&
+                          controller.peerFingerprintHex != null)
+                        TextButton(
+                          onPressed: () {
+                            final peerId = session?.callerUserId == controller.myUserId
+                                ? session?.calleeUserId
+                                : session?.callerUserId;
+                            Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => SafetyNumberScreen(
+                                  peerEmail: peerId ?? 'peer',
+                                  peerFingerprintHex: controller.peerFingerprintHex!,
+                                  localFingerprintHex:
+                                      controller.localSafetyFingerprintHex ?? '',
+                                  initialTrust: controller.peerManuallyVerified
+                                      ? SafetyTrustState.verified
+                                      : SafetyTrustState.unverified,
+                                  onTrustChanged: (state) {
+                                    if (state == SafetyTrustState.verified) {
+                                      controller.markSafetyNumberVerified();
+                                    }
+                                  },
+                                ),
+                              ),
+                            );
+                          },
+                          child: const Text('Compare safety number'),
+                        ),
+                    ],
+                  ),
+                ),
                 Positioned(
                   left: 0,
                   right: 0,

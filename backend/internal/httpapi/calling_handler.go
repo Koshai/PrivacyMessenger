@@ -31,10 +31,21 @@ type CallingService interface {
 type CallingHandler struct {
 	service CallingService
 	hub     *realtime.Hub
+	purger  interface {
+		Purge(ctx context.Context, callID uuid.UUID) error
+	}
 }
 
 func NewCallingHandler(service CallingService, hub *realtime.Hub) *CallingHandler {
 	return &CallingHandler{service: service, hub: hub}
+}
+
+func (h *CallingHandler) SetAuthPurger(p interface {
+	Purge(ctx context.Context, callID uuid.UUID) error
+}) {
+	if h != nil {
+		h.purger = p
+	}
 }
 
 func (h *CallingHandler) NotifyCall(userID uuid.UUID, eventType, callID string) {
@@ -259,6 +270,9 @@ func (h *CallingHandler) mutateCallNoDevice(
 	if err != nil {
 		writeCallingError(w, err)
 		return
+	}
+	if call.State == calling.StateEnded && h.purger != nil {
+		_ = h.purger.Purge(r.Context(), callID)
 	}
 	writeJSON(w, http.StatusOK, mapCall(call))
 }

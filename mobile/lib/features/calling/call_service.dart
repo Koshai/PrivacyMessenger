@@ -32,6 +32,9 @@ abstract class CallService {
   Object? get localRenderer;
   Object? get remoteRenderer;
 
+  /// SHA-256 DTLS fingerprints from the local and remote descriptions.
+  Future<({List<int> local, List<int> remote})?> dtlsFingerprints() async => null;
+
   Future<void> disposeMedia();
 }
 

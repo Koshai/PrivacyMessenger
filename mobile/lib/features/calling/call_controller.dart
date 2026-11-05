@@ -4,6 +4,8 @@ import 'package:flutter/widgets.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../messaging/realtime_client.dart';
+import 'call_auth.dart';
+import 'call_auth_session.dart';
 import 'call_service.dart';
 import 'calling_api_client.dart';
 import 'models/call_session.dart';
@@ -30,6 +32,8 @@ class CallController extends ChangeNotifier {
     this.requestPermissions = _defaultPermissions,
     this.disconnectGrace = const Duration(seconds: 12),
     this.iceSubmitAttempts = 3,
+    this.authenticatePeer,
+    this.authTimeout = const Duration(seconds: 20),
   });
 
   final CallingApiClient api;
@@ -41,6 +45,20 @@ class CallController extends ChangeNotifier {
   final Future<bool> Function(CallMediaType mediaType) requestPermissions;
   final Duration disconnectGrace;
   final int iceSubmitAttempts;
+  final CallAuthenticator? authenticatePeer;
+  final Duration authTimeout;
+
+  String authPhase = CallAuthPhase.idle;
+  String? peerFingerprintHex;
+  String? authenticatedPeerDeviceId;
+  String? localSafetyFingerprintHex;
+  bool peerManuallyVerified = false;
+  List<int>? _observedRemoteDtls;
+
+  /// Remote media is shown as authenticated only after peer verification.
+  /// Tests without an authenticator keep the previous display behavior.
+  bool get remoteMediaAuthenticated =>
+      authenticatePeer == null || authPhase == CallAuthPhase.authenticated;
 
   CallPhase phase = CallPhase.idle;
   CallSession? session;
@@ -270,11 +288,83 @@ class CallController extends ChangeNotifier {
 
   Future<void> switchCamera() => media.switchCamera();
 
+  /// Records an explicit safety-number comparison. Does not accept a new key.
+  Future<void> markSafetyNumberVerified() async {
+    final id = authenticatedPeerDeviceId;
+    if (id == null || authPhase != CallAuthPhase.authenticated) return;
+    await persistManualCallTrust(id);
+    peerManuallyVerified = true;
+    notifyListeners();
+  }
+
+  /// ICE restart or renegotiation that changes the remote DTLS fingerprint
+  /// invalidates authentication. MVP does not silently re-sign.
+  Future<void> onDtlsRestart(List<int> remoteFingerprint) async {
+    final previous = _observedRemoteDtls;
+    if (previous == null) return;
+    if (previous.length == remoteFingerprint.length) {
+      var diff = 0;
+      for (var i = 0; i < previous.length; i++) {
+        diff |= previous[i] ^ remoteFingerprint[i];
+      }
+      if (diff == 0) return;
+    }
+    authPhase = CallAuthPhase.failed;
+    error = 'DTLS fingerprint changed';
+    notifyListeners();
+    await hangUp();
+  }
+
+  Future<void> _runAuth(int generation) async {
+    final verify = authenticatePeer;
+    final current = session;
+    if (verify == null || current == null) return;
+    authPhase = CallAuthPhase.verifying;
+    notifyListeners();
+    try {
+      final fps = await media.dtlsFingerprints().timeout(authTimeout);
+      if (!_isCurrent(generation) || session?.id != current.id) return;
+      if (fps == null) {
+        throw StateError('DTLS fingerprint unavailable');
+      }
+      _observedRemoteDtls = List<int>.from(fps.remote);
+      final outcome = await verify(CallAuthRequest(
+        session: current,
+        myUserId: myUserId,
+        localDtls: fps.local,
+        remoteDtls: fps.remote,
+      )).timeout(authTimeout);
+      if (!_isCurrent(generation) || session?.id != current.id) return;
+      authPhase = outcome.phase;
+      peerFingerprintHex = outcome.fingerprintHex;
+      authenticatedPeerDeviceId = outcome.peerDeviceId;
+      peerManuallyVerified = outcome.manuallyVerified;
+      if (outcome.phase != CallAuthPhase.authenticated) {
+        error = outcome.error ?? 'Verification failed';
+        notifyListeners();
+        await hangUp();
+        return;
+      }
+      notifyListeners();
+    } catch (e) {
+      if (!_isCurrent(generation)) return;
+      authPhase = CallAuthPhase.failed;
+      error = e.toString();
+      notifyListeners();
+      await hangUp();
+    }
+  }
+
   void _beginCall() {
     _generation++;
     _ending = false;
     _mediaReleased = false;
     localMediaConnected = false;
+    authPhase = CallAuthPhase.idle;
+    peerFingerprintHex = null;
+    authenticatedPeerDeviceId = null;
+    peerManuallyVerified = false;
+    _observedRemoteDtls = null;
     _iceAfter = 0;
     _appliedIceSeq.clear();
     _processedAnswers.clear();
@@ -377,6 +467,9 @@ class CallController extends ChangeNotifier {
         notifyListeners();
         if (callId != null) {
           unawaited(api.markConnected(token: tokenProvider(), callId: callId));
+        }
+        if (authenticatePeer != null) {
+          unawaited(_runAuth(gen));
         }
       case CallMediaEventKind.connectionFailed:
         if (!_isCurrent(gen)) return;

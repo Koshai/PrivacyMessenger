@@ -18,6 +18,7 @@ type RouterDependencies struct {
 	RealtimeHandler      *RealtimeHandler
 	CallingHandler       *CallingHandler
 	TurnHandler          *TurnHandler
+	CallAuthHandler      *CallAuthHandler
 }
 
 // NewConfiguredRouter is the central router factory.
@@ -111,6 +112,9 @@ func NewConfiguredRouter(
 				deps.SessionAuthenticator,
 				deps.CallingHandler,
 			)
+		}
+		if deps.CallAuthHandler != nil {
+			RegisterCallAuthRoutes(mux, deps.SessionAuthenticator, deps.CallAuthHandler)
 		}
 		if deps.TurnHandler != nil {
 			mux.Handle(

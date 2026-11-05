@@ -16,6 +16,8 @@ class FakeCallService implements CallService {
   bool prepared = false;
   int prepareCount = 0;
   int disposeCount = 0;
+  List<int> localDtls = List<int>.filled(32, 1);
+  List<int> remoteDtls = List<int>.filled(32, 2);
   String? failCandidateContaining;
   final List<String> remoteIce = [];
   int applyAnswerCount = 0;
@@ -119,6 +121,11 @@ class FakeCallService implements CallService {
   @override
   Future<void> switchCamera() async {
     switches++;
+  }
+
+  @override
+  Future<({List<int> local, List<int> remote})?> dtlsFingerprints() async {
+    return (local: localDtls, remote: remoteDtls);
   }
 
   @override

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
+import 'call_auth.dart';
 import 'call_service.dart';
 import 'ice_servers.dart';
 import 'models/call_session.dart';
@@ -201,6 +202,14 @@ class WebRtcCallService implements CallService {
     final tracks = _local?.getVideoTracks() ?? const <MediaStreamTrack>[];
     if (tracks.isEmpty) return;
     await Helper.switchCamera(tracks.first);
+  }
+
+  @override
+  Future<({List<int> local, List<int> remote})?> dtlsFingerprints() async {
+    final local = parseSdpFingerprint((await _pc?.getLocalDescription())?.sdp);
+    final remote = parseSdpFingerprint((await _pc?.getRemoteDescription())?.sdp);
+    if (local == null || remote == null) return null;
+    return (local: local, remote: remote);
   }
 
   @override

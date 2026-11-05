@@ -51,8 +51,9 @@
 **Status:**
 - **D1** signaling + **D1.1** hardening: Go calling module, HTTP/WS, concurrency, device bind, privacy errors — see `docs/CALLING_D1_REPORT.md`, `docs/CALLING_D2_REPORT.md`.
 - **D2** + **D2.1:** WebRTC client and call recovery — `docs/CALLING_D2_REPORT.md`, `docs/CALLING_D3_REPORT.md`.
-- **D3** (for review): coturn REST credentials, `GET /calls/ice-config`, relay-only mode — `docs/CALLING_D3_REPORT.md`, `docs/TURN_DEPLOYMENT.md`.
-- **D4–D7:** not started. **Milestone D not complete.** **Stop before D4 for review.**
+- **D3** TURN: `docs/CALLING_D3_REPORT.md`, `docs/TURN_DEPLOYMENT.md`.
+- **D4** (for review): call-authentication handshake — `docs/CALLING_D4_REPORT.md`, `docs/CALL_AUTH_PROTOCOL.md`.
+- **D5–D7:** not started. **Milestone D not complete.** **Stop before D5 for review.**
 
 ## Milestone E — Release candidate
 

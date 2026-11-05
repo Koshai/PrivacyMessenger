@@ -3,7 +3,7 @@
 **Updated:** 2026-11-05  
 **Repository:** https://github.com/Koshai/PrivacyMessenger  
 **Remote `origin/master`:** `f57cd32fb82951beb6b213c894956be0144251cd`  
-**D2.1 + D3:** local working tree, not pushed. No GitHub Actions run for this change.
+**D4:** cryptographic call authentication is implemented for review. Milestone D stays open. Remote SHA is the commit that contains this report.
 
 ## Milestone progress
 
@@ -12,7 +12,7 @@
 | A — Auth | Complete |
 | B — Friends | Complete |
 | C — E2EE | **Complete (C4)** |
-| D — Calls | **D1.1, D2, D2.1, D3 ready for review** — D4–D7 not started; Milestone D **not** complete |
+| D — Calls | **D1.1–D4 ready for review** — D5–D7 not started; Milestone D **not** complete |
 | E — Release | Not started |
 
 ## D2.1 / D3 gates (this machine)
@@ -29,4 +29,4 @@
 
 ## Next
 
-Review D3 → then **D4** (MLS/device binding for calls). Do not mark Milestone D complete.
+Review D4 before **D5**. Do not mark Milestone D complete. Protocol: `docs/CALL_AUTH_PROTOCOL.md`.

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"example.com/private-messenger/backend/internal/auth"
+	"example.com/private-messenger/backend/internal/callauth"
 	"example.com/private-messenger/backend/internal/calling"
 	"example.com/private-messenger/backend/internal/config"
 	appcrypto "example.com/private-messenger/backend/internal/crypto"
@@ -137,6 +138,14 @@ func main() {
 	callingHandler := httpapi.NewCallingHandler(callingService, hub)
 	callingService.WithNotifier(callingHandler)
 
+	callAuthService := callauth.NewService(
+		callauth.NewRepository(db),
+		callauth.CallingBridge{Get: callingService.Get},
+		callauth.NewPostgresRevocation(db),
+	)
+	callingHandler.SetAuthPurger(callAuthService)
+	callAuthHandler := httpapi.NewCallAuthHandler(callAuthService)
+
 	turnHandler, err := loadTurnHandler()
 	if err != nil {
 		log.Fatalf("TURN configuration: %v", err)
@@ -177,6 +186,7 @@ func main() {
 			RealtimeHandler:      realtimeHandler,
 			CallingHandler:       callingHandler,
 			TurnHandler:          turnHandler,
+			CallAuthHandler:      callAuthHandler,
 		},
 	)
 

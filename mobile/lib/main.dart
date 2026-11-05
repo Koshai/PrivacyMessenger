@@ -6,12 +6,15 @@ import 'package:http/http.dart' as http;
 import 'core/auth/auth_controller.dart';
 import 'core/auth/auth_state.dart';
 import 'core/auth/secure_session_store.dart';
+import 'core/crypto/device_crypto_store.dart';
 import 'core/crypto/license_notices.dart';
 import 'core/crypto/mls_session_manager.dart';
 import 'core/network/api_client.dart';
 import 'core/network/api_config.dart';
 import 'core/theme/app_theme.dart';
 
+import 'features/calling/call_auth.dart';
+import 'features/calling/call_auth_session.dart';
 import 'features/calling/call_controller.dart';
 import 'features/calling/call_screens.dart';
 import 'features/calling/calling_api_client.dart';
@@ -161,6 +164,7 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
     );
     final callingApi = CallingApiClient(client: http.Client(), baseUri: base);
     const relayOnly = bool.fromEnvironment('CALL_RELAY_ONLY');
+    final authState = widget.authController.state;
     _calls = CallController(
       api: callingApi,
       media: WebRtcCallService(
@@ -170,9 +174,32 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
           relayOnly: relayOnly,
         ),
       ),
-      myUserId: widget.authController.state.userId ?? '',
+      myUserId: authState.userId ?? '',
       tokenProvider: () => _token,
       realtime: _realtime,
+      authenticatePeer: (request) async {
+        final userId = widget.authController.state.userId ?? '';
+        final deviceId = widget.authController.state.deviceId ?? '';
+        final record = await DeviceCryptoStore().read(userId: userId, deviceId: deviceId);
+        if (record == null) {
+          return const CallAuthOutcome(
+            phase: CallAuthPhase.failed,
+            error: 'No messaging identity for this device',
+          );
+        }
+        _calls.localSafetyFingerprintHex = record.fingerprintHex;
+        return CallAuthSession(
+          api: callingApi,
+          token: () => _token,
+          userId: userId,
+          deviceId: deviceId,
+          localMlsFingerprintHex: record.fingerprintHex,
+          peerIdentities: (id) => widget.apiClient.peerIdentities(
+            token: _token,
+            peerUserId: id,
+          ),
+        ).run(request);
+      },
     );
     unawaited(_bootstrap());
   }

@@ -23,3 +23,12 @@ func RegisterCallingRoutes(
 	mux.Handle("POST /calls/{callID}/ice", protect(handler.AddICE))
 	mux.Handle("GET /calls/{callID}/ice", protect(handler.ListICE))
 }
+
+func RegisterCallAuthRoutes(mux *http.ServeMux, auth SessionAuthenticator, handler *CallAuthHandler) {
+	protect := func(h http.HandlerFunc) http.Handler {
+		return RequireAuthentication(auth, h)
+	}
+	mux.Handle("POST /calls/auth-key", protect(handler.RegisterKey))
+	mux.Handle("POST /calls/{callID}/auth", protect(handler.Submit))
+	mux.Handle("GET /calls/{callID}/auth", protect(handler.List))
+}
