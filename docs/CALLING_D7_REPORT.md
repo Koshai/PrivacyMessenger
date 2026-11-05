@@ -29,7 +29,7 @@ Remote playback is enabled only for the call generation that finished authentica
 | Stale playback, API interruption, revocation, media release | Passed in `call_d7_lifecycle_test.dart` |
 | Live two-client binding through the shared pipeline | Passed inside the 153 |
 
-The CI `flutter` job skips the live test. The `live-e2e` job runs it. The `turn-relay` job is the loopback relay pass. A skip is not a pass.
+The CI `flutter` job skips the live test. The `live-e2e` job runs it. That job builds the API binary before it waits for `/health`, so a cold module download does not skip the test. The `turn-relay` job is the loopback relay pass. A skip is not a pass.
 
 ## Devices
 

@@ -126,7 +126,10 @@ jobs:
       - name: Start API
         working-directory: backend
         run: |
-          go run ./cmd/api > "$RUNNER_TEMP/api.log" 2>&1 &
+          # Build before the health loop. A cold module download must not
+          # expire the wait and skip the live test.
+          go build -o "$RUNNER_TEMP/pm-api" ./cmd/api
+          "$RUNNER_TEMP/pm-api" > "$RUNNER_TEMP/api.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/api.pid"
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:4000/health; then
