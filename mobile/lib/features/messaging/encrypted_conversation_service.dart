@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 
-import '../calling/call_auth_session.dart';
+import '../../core/crypto/encryption_service.dart';
 import '../../core/crypto/mls_session_manager.dart';
 import '../../core/crypto/protocol_messages.dart';
 import '../../core/network/api_client.dart' show ApiClient, ApiException;
+import '../calling/call_auth.dart';
+import '../calling/call_auth_session.dart';
+import '../calling/call_binding_inbox.dart';
 import 'models/envelope.dart';
 
 /// Orchestrates MLS session setup and opaque envelope exchange.
@@ -14,18 +17,45 @@ class EncryptedConversationService {
   EncryptedConversationService({
     required this.api,
     required this.mls,
+    this.inbox,
+    this.engine,
   });
 
   final ApiClient api;
   final MlsSessionManager mls;
+  final CallBindingInbox? inbox;
+  final MlsGroupEncryptionService? engine;
+
+  MlsGroupEncryptionService? get _crypto => engine ?? mls.service;
 
   final Map<String, String> _groupByConversation = {};
   final Map<String, String> _knownFingerprints = {};
   final Map<String, String> _peerByConversation = {};
   final Set<String> _processedEnvelopeIds = {};
   final Set<String> _joinedViaWelcome = {};
+  final Map<String, StoredCallBinding> _heldBindings = {};
+  Future<void> _chain = Future<void>.value();
 
   String? keyChangeWarning;
+
+  void rememberGroup(String conversationId, String groupIdHex) {
+    _groupByConversation[conversationId] = groupIdHex;
+  }
+
+  /// Pulls pending server envelopes through this pipeline only.
+  Future<void> pullPending({
+    required String token,
+    required String myUserId,
+  }) async {
+    final pending = await api.syncPending(token: token);
+    await ingestEnvelopes(token: token, myUserId: myUserId, envelopes: pending);
+  }
+
+  Future<T> _exclusive<T>(Future<T> Function() action) {
+    final result = _chain.then((_) => action());
+    _chain = result.then((_) {}, onError: (_) {});
+    return result;
+  }
 
   Future<void> enrollDevice(String token) async {
     final record = mls.record;
@@ -162,8 +192,16 @@ class EncryptedConversationService {
     required String token,
     required String myUserId,
     required List<MessageEnvelope> envelopes,
+  }) {
+    return _exclusive(() => _ingestEnvelopes(token: token, myUserId: myUserId, envelopes: envelopes));
+  }
+
+  Future<List<ChatMessageView>> _ingestEnvelopes({
+    required String token,
+    required String myUserId,
+    required List<MessageEnvelope> envelopes,
   }) async {
-    final svc = mls.service;
+    final svc = _crypto;
     if (svc == null) throw StateError('MLS not ready');
 
     final sorted = [...envelopes]..sort(compareEnvelopesForProcessing);
@@ -179,7 +217,8 @@ class EncryptedConversationService {
       }
 
       if (env.senderId == myUserId &&
-          env.contentType == MlsContentTypes.application) {
+          (env.contentType == MlsContentTypes.application ||
+              env.contentType == MlsContentTypes.callKeyBinding)) {
         _processedEnvelopeIds.add(env.id);
         return;
       }
@@ -221,19 +260,15 @@ class EncryptedConversationService {
         return;
       }
 
+      if (env.contentType == MlsContentTypes.callKeyBinding) {
+        await _acceptCallBinding(token: token, svc: svc, env: env, groupId: groupId);
+        return;
+      }
+
       final decrypted = await svc.processIncoming(
         groupIdHex: groupId,
         messageBytes: env.ciphertext,
       );
-
-      if (env.contentType == MlsContentTypes.callKeyBinding) {
-        if (decrypted == null) {
-          throw StateError('call key binding produced no plaintext');
-        }
-        await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
-        _processedEnvelopeIds.add(env.id);
-        return;
-      }
 
       if (env.contentType == MlsContentTypes.application) {
         if (decrypted == null) {
@@ -282,6 +317,72 @@ class EncryptedConversationService {
       }
     }
     return out;
+  }
+
+  Future<void> _acceptCallBinding({
+    required String token,
+    required MlsGroupEncryptionService svc,
+    required MessageEnvelope env,
+    required String groupId,
+  }) async {
+    final box = inbox;
+    if (box == null) {
+      throw StateError('Call binding inbox is not configured');
+    }
+    if (await box.contains(env.id)) {
+      await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
+      _processedEnvelopeIds.add(env.id);
+      return;
+    }
+    final held = _heldBindings.remove(env.id);
+    final StoredCallBinding record;
+    if (held != null) {
+      record = held;
+    } else {
+      final decrypted = await svc.processIncoming(
+        groupIdHex: groupId,
+        messageBytes: env.ciphertext,
+      );
+      if (decrypted == null) {
+        throw StateError('call key binding produced no plaintext');
+      }
+      record = _bindingRecord(env, decrypted.plaintext);
+    }
+    try {
+      await box.put(record);
+    } catch (e) {
+      _heldBindings[env.id] = record;
+      rethrow;
+    }
+    await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
+    _processedEnvelopeIds.add(env.id);
+  }
+
+  StoredCallBinding _bindingRecord(MessageEnvelope env, List<int> plain) {
+    final rejected = StoredCallBinding(
+      envelopeId: env.id,
+      conversationId: env.conversationId,
+      senderUserId: env.senderId.toLowerCase(),
+      senderDeviceId: '',
+      signature: const [],
+      statement: const [],
+      storedAt: DateTime.now().toUtc(),
+      rejected: true,
+    );
+    if (plain.length <= 64) return rejected;
+    final parsed = tryParseBindingStatement(plain.sublist(64));
+    if (parsed == null) return rejected;
+    if (parsed.userId != env.senderId.toLowerCase()) return rejected;
+    return StoredCallBinding(
+      envelopeId: env.id,
+      conversationId: env.conversationId,
+      senderUserId: parsed.userId,
+      senderDeviceId: parsed.deviceId,
+      signature: List<int>.from(plain.sublist(0, 64)),
+      statement: List<int>.from(plain.sublist(64)),
+      storedAt: DateTime.now().toUtc(),
+      rejected: false,
+    );
   }
 
   bool _isAuthorizedSender(MessageEnvelope env, String myUserId) {

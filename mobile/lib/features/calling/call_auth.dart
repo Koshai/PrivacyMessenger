@@ -297,6 +297,42 @@ Uint8List bindingStatementBytes({
   return out.toBytes();
 }
 
+class ParsedBindingStatement {
+  const ParsedBindingStatement({required this.userId, required this.deviceId});
+
+  final String userId;
+  final String deviceId;
+}
+
+/// Returns the account and device named by a binding statement.
+/// A malformed statement returns null. This does not check the signature.
+ParsedBindingStatement? tryParseBindingStatement(List<int> statement) {
+  final domain = utf8.encode(callKeyBindingDomain);
+  const tail = 1 + 16 + 16 + 32 + 32;
+  if (statement.length != domain.length + tail) return null;
+  for (var i = 0; i < domain.length; i++) {
+    if (statement[i] != domain[i]) return null;
+  }
+  var offset = domain.length;
+  if (statement[offset] != 1) return null;
+  offset += 1;
+  try {
+    final userId = _uuidFromBytes(statement.sublist(offset, offset + 16));
+    offset += 16;
+    final deviceId = _uuidFromBytes(statement.sublist(offset, offset + 16));
+    return ParsedBindingStatement(userId: userId, deviceId: deviceId);
+  } on FormatException {
+    return null;
+  }
+}
+
+String _uuidFromBytes(List<int> bytes) {
+  if (bytes.length != 16) throw const FormatException('uuid');
+  final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
+      '${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+}
+
 /// The statement must be signed by the call key and must match the hello.
 /// Pins come from the local trust store. A server-reported fingerprint is not an input.
 Future<CallCheck> verifyCallKeyBinding({

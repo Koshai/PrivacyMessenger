@@ -15,7 +15,9 @@ import 'core/theme/app_theme.dart';
 
 import 'features/calling/call_auth.dart';
 import 'features/calling/call_auth_session.dart';
+import 'features/calling/call_binding_inbox.dart';
 import 'features/calling/call_key_binding.dart';
+import 'features/messaging/encrypted_conversation_service.dart';
 import 'features/calling/call_platform.dart';
 import 'features/calling/call_controller.dart';
 import 'features/calling/call_screens.dart';
@@ -155,11 +157,19 @@ class _AuthenticatedShell extends StatefulWidget {
 class _AuthenticatedShellState extends State<_AuthenticatedShell> {
   late final CallController _calls;
   late final RealtimeClient _realtime;
+  late final CallBindingInbox _bindingInbox;
+  late final EncryptedConversationService _messaging;
   String _token = '';
 
   @override
   void initState() {
     super.initState();
+    _bindingInbox = CallBindingInbox();
+    _messaging = EncryptedConversationService(
+      api: widget.apiClient,
+      mls: widget.mls,
+      inbox: _bindingInbox,
+    );
     final base = ApiConfig.baseUri;
     _realtime = RealtimeClient(
       wsBaseUri: base.replace(scheme: base.scheme == 'https' ? 'wss' : 'ws'),
@@ -194,6 +204,9 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
           api: widget.apiClient,
           mls: widget.mls,
           token: () => _token,
+          pipeline: _messaging,
+          inbox: _bindingInbox,
+          myUserId: () => widget.authController.state.userId ?? '',
         );
         return CallAuthSession(
           api: callingApi,
@@ -207,10 +220,11 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
         ).run(request);
       },
       recheckEnrollment: (peerUser, peerDevice) => _peerEnrolled(peerUser, peerDevice),
-      clearLocalSecrets: () {
+      clearLocalSecrets: () async {
         final userId = widget.authController.state.userId ?? '';
         final deviceId = widget.authController.state.deviceId ?? '';
-        return clearLocalCallSecret(userId: userId, deviceId: deviceId);
+        await clearLocalCallSecret(userId: userId, deviceId: deviceId);
+        await _bindingInbox.clear();
       },
     );
     _calls.onLifecycle = CallPlatformBridge.instance.show;
@@ -255,6 +269,7 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
         apiClient: widget.apiClient,
         authController: widget.authController,
         mls: widget.mls,
+        messaging: _messaging,
         callController: _calls,
       ),
     );
@@ -266,6 +281,7 @@ class MainNavigation extends StatefulWidget {
   final ApiClient? apiClient;
   final AuthController? authController;
   final MlsSessionManager? mls;
+  final EncryptedConversationService? messaging;
   final CallController? callController;
 
   const MainNavigation({
@@ -274,6 +290,7 @@ class MainNavigation extends StatefulWidget {
     this.apiClient,
     this.authController,
     this.mls,
+    this.messaging,
     this.callController,
   });
 
@@ -291,6 +308,7 @@ class _MainNavigationState extends State<MainNavigation> {
         apiClient: widget.apiClient,
         authController: widget.authController,
         mls: widget.mls,
+        messaging: widget.messaging,
         callController: widget.callController,
       ),
       FriendsScreen(

@@ -3,22 +3,30 @@ import 'dart:typed_data';
 import '../../core/crypto/mls_session_manager.dart';
 import '../../core/crypto/protocol_messages.dart';
 import '../../core/network/api_client.dart';
+import '../messaging/encrypted_conversation_service.dart';
 import 'call_auth_session.dart';
+import 'call_binding_inbox.dart';
 
-/// Delivers the call-key binding through the existing MLS conversation.
+/// Publishes our call-key binding and waits for the peer binding.
 ///
-/// The signaling server sees only opaque ciphertext. A binding is accepted
-/// only after OpenMLS decrypts it in the established group.
+/// Decryption happens only inside [EncryptedConversationService]. This channel
+/// reads the durable inbox after that pipeline has stored the plaintext.
 class MlsCallKeyChannel {
   MlsCallKeyChannel({
     required this.api,
     required this.mls,
     required this.token,
+    required this.pipeline,
+    required this.inbox,
+    required this.myUserId,
   });
 
   final ApiClient api;
   final MlsSessionManager mls;
   final String Function() token;
+  final String Function() myUserId;
+  final EncryptedConversationService pipeline;
+  final CallBindingInbox inbox;
 
   Future<PeerBinding?> exchange({
     required String peerUserId,
@@ -27,10 +35,12 @@ class MlsCallKeyChannel {
     required List<int> localSignature,
   }) async {
     final svc = mls.service;
-    if (svc == null || peerDeviceId.isEmpty) return null;
+    if (svc == null || peerDeviceId.isEmpty || myUserId().isEmpty) return null;
     final conversation = await api.openConversation(token: token(), peerUserId: peerUserId);
     final groupId = conversation.mlsGroupIdHex;
     if (groupId == null) return null;
+    pipeline.rememberGroup(conversation.conversationId, groupId);
+    pipeline.bindConversationPeer(conversation.conversationId, peerUserId);
 
     final blob = BytesBuilder(copy: false)
       ..add(localSignature)
@@ -45,25 +55,10 @@ class MlsCallKeyChannel {
     );
 
     for (var i = 0; i < 20; i++) {
-      final envelopes = await api.listEnvelopes(
-        token: token(),
-        conversationId: conversation.conversationId,
-        limit: 50,
-      );
-      for (final env in envelopes.reversed) {
-        if (env.contentType != MlsContentTypes.callKeyBinding || env.senderId != peerUserId) {
-          continue;
-        }
-        final decrypted = await svc.processIncoming(
-          groupIdHex: groupId,
-          messageBytes: env.ciphertext,
-        );
-        final plain = decrypted?.plaintext;
-        if (plain == null || plain.length <= 64) continue;
-        return PeerBinding(
-          signature: plain.sublist(0, 64),
-          statement: plain.sublist(64),
-        );
+      await pipeline.pullPending(token: token(), myUserId: myUserId());
+      final stored = await inbox.find(senderUserId: peerUserId, senderDeviceId: peerDeviceId);
+      if (stored != null) {
+        return PeerBinding(signature: stored.signature, statement: stored.statement);
       }
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }

@@ -5,10 +5,14 @@ import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:openmls/openmls.dart';
+import 'package:private_messenger/core/crypto/mls_session_manager.dart';
 import 'package:private_messenger/core/crypto/openmls/mls_device_harness.dart';
 import 'package:private_messenger/core/crypto/protocol_messages.dart';
 import 'package:private_messenger/core/network/api_client.dart';
 import 'package:private_messenger/features/calling/call_auth.dart';
+import 'package:private_messenger/features/calling/call_auth_session.dart';
+import 'package:private_messenger/features/calling/call_binding_inbox.dart';
+import 'package:private_messenger/features/messaging/encrypted_conversation_service.dart';
 import 'package:private_messenger/features/messaging/models/envelope.dart';
 
 /// Live two-client native OpenMLS ↔ Go API ↔ PostgreSQL harness (C4).
@@ -314,36 +318,64 @@ void main() {
       (e) => e.contentType == MlsContentTypes.callKeyBinding,
     );
     expect(bindEnv.senderId, aliceUserId);
-    final opened = await bob.service.processIncoming(
-      groupIdHex: bob.groupIdHex!,
-      messageBytes: bindEnv.ciphertext,
+    final bindingStore = MemoryCallAuthStore();
+    final inbox = CallBindingInbox(store: bindingStore);
+    final pipeline = EncryptedConversationService(
+      api: api,
+      mls: MlsSessionManager(),
+      inbox: inbox,
+      engine: bob.service,
     );
-    expect(opened, isNotNull);
-    final plain = opened!.plaintext;
-    expect(plain.length, greaterThan(64));
+    pipeline.rememberGroup(conversation.conversationId, bob.groupIdHex!);
+    pipeline.bindConversationPeer(conversation.conversationId, aliceUserId);
+    final shown = await pipeline.ingestEnvelopes(
+      token: bobToken,
+      myUserId: bobUserId,
+      envelopes: [bindEnv],
+    );
+    expect(shown, isEmpty);
+    final stored = await inbox.find(senderUserId: aliceUserId, senderDeviceId: aliceDeviceId);
+    expect(stored, isNotNull);
     final verified = await verifyCallKeyBinding(
-      statement: plain.sublist(64),
-      signature: plain.sublist(0, 64),
+      statement: stored!.statement,
+      signature: stored.signature,
       expectedUserId: aliceUserId,
       expectedDeviceId: aliceDeviceId,
       helloCallKey: callKey,
     );
     expect(verified.ok, isTrue);
     final wrongDevice = await verifyCallKeyBinding(
-      statement: plain.sublist(64),
-      signature: plain.sublist(0, 64),
+      statement: stored.statement,
+      signature: stored.signature,
       expectedUserId: aliceUserId,
       expectedDeviceId: bobDeviceId,
       helloCallKey: callKey,
     );
     expect(wrongDevice.ok, isFalse);
-    await expectLater(
-      bob.service.processIncoming(
-        groupIdHex: bob.groupIdHex!,
-        messageBytes: List<int>.filled(96, 7),
-      ),
-      throwsA(anything),
+    final duplicate = await pipeline.ingestEnvelopes(
+      token: bobToken,
+      myUserId: bobUserId,
+      envelopes: [bindEnv],
     );
+    expect(duplicate, isEmpty);
+    expect(pipeline.keyChangeWarning, isNull);
+    await pipeline.ingestEnvelopes(
+      token: bobToken,
+      myUserId: bobUserId,
+      envelopes: [
+        MessageEnvelope(
+          id: 'substituted-binding',
+          conversationId: conversation.conversationId,
+          senderId: aliceUserId,
+          clientMessageId: 'substituted-binding',
+          ciphertext: List<int>.filled(96, 7),
+          contentType: MlsContentTypes.callKeyBinding,
+          createdAt: DateTime.now().toUtc(),
+        ),
+      ],
+    );
+    expect(pipeline.keyChangeWarning, isNotNull);
+    expect(await inbox.find(senderUserId: aliceUserId, senderDeviceId: aliceDeviceId), isNotNull);
 
     final ids =
         await api.peerIdentities(token: aliceToken, peerUserId: bobUserId);

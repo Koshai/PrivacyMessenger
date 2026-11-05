@@ -79,11 +79,11 @@ A messaging fingerprint is written when a key package is claimed. If that device
 
 Logout deletes only this device's call-signing seed (`call_auth_seed_<user>_<device>`). Contact pins are kept, including after a device replacement, until the person compares safety numbers and accepts the new identity. Pins are keyed by device id.
 
-Production call authentication requires an enrollment callback. The callback checks that the peer device is still present for that account. Absence of the callback, a revoked device, or an unexpected replacement device ends verification. While a call is authenticated, the client rechecks enrollment on resume and about once a second, and hangs up when the device is gone or the check itself fails.
+Production call authentication requires an enrollment callback. The callback checks that the peer device is still present for that account. Absence of the callback, a revoked device, or an unexpected replacement device ends verification. While a call is authenticated, the client rechecks enrollment on resume and about once a second, with a timeout. A response that the device is gone ends the call. A timeout or an unreachable API leaves the call up and retries.
 
 The server relays auth frames and reports enrollment presence. The client still verifies the hello signature, the pinned call key, the MLS-decrypted binding, and the DTLS fingerprint. A server-supplied fingerprint is not the pin.
 
-The call-key binding travels as MLS application ciphertext with content type `application/call-key-binding`. The server stores that type and does not decrypt it. The recipient accepts the binding only after OpenMLS decrypts it in the expected conversation and the signed statement matches the account, device, MLS fingerprint, and call public key from the hello. An unrelated ciphertext fails decrypt or verification. Without an established MLS conversation the exchange returns nothing and the call fails closed.
+The call-key binding travels as MLS application ciphertext with content type `application/call-key-binding`. The server stores that type and does not decrypt it. One conversation pipeline decrypts each envelope once. A binding is stored in an encrypted, bounded, expiring device inbox before the server is acknowledged, and it is not rendered as chat. The statement account must match the envelope sender. Call setup reads that inbox. The signed statement must also match the device, MLS fingerprint, and call public key from the hello. An unrelated ciphertext fails decrypt or verification. Without an established MLS conversation the exchange returns nothing and the call fails closed. Remote media playback is enabled only for the call generation that finished authentication.
 
 ## Background ringing
 

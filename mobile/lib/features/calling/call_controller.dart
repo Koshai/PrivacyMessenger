@@ -36,6 +36,7 @@ class CallController extends ChangeNotifier {
     this.authTimeout = const Duration(seconds: 20),
     this.recheckEnrollment,
     this.clearLocalSecrets,
+    this.enrollmentTimeout = const Duration(seconds: 5),
   });
 
   final CallingApiClient api;
@@ -54,6 +55,11 @@ class CallController extends ChangeNotifier {
   /// that do not model revocation. A false result ends the call.
   final Future<bool> Function(String peerUserId, String peerDeviceId)? recheckEnrollment;
   final Future<void> Function()? clearLocalSecrets;
+  final Duration enrollmentTimeout;
+
+  /// True after an enrollment request timed out or the API could not be reached.
+  /// A deferred check does not end the call. A false result does.
+  bool enrollmentRecheckDeferred = false;
 
   /// `incoming`, `ongoing`, or `ended`. The kind carries no signaling payload.
   void Function(String kind)? onLifecycle;
@@ -96,6 +102,7 @@ class CallController extends ChangeNotifier {
   bool _ending = false;
   bool _mediaReleased = false;
   bool _rechecking = false;
+  int? _authGeneration;
 
   String? _lifecycleKind;
 
@@ -309,24 +316,32 @@ class CallController extends ChangeNotifier {
     final current = session;
     if (check == null || peer == null || current == null || _rechecking) return;
     if (authPhase != CallAuthPhase.authenticated) return;
+    final generation = _generation;
     _rechecking = true;
     try {
       final peerUser =
           current.callerUserId == myUserId ? current.calleeUserId : current.callerUserId;
-      final ok = await check(peerUser, peer);
-      if (!ok && authPhase == CallAuthPhase.authenticated && session?.id == current.id) {
+      final bool ok;
+      try {
+        ok = await check(peerUser, peer).timeout(enrollmentTimeout);
+      } on TimeoutException {
+        enrollmentRecheckDeferred = true;
+        return;
+      } catch (_) {
+        enrollmentRecheckDeferred = true;
+        return;
+      }
+      if (!_isCurrent(generation) || session?.id != current.id) return;
+      if (authPhase != CallAuthPhase.authenticated) return;
+      if (!ok) {
+        enrollmentRecheckDeferred = false;
         authPhase = CallAuthPhase.failed;
         error = 'Identity revoked';
         notifyListeners();
         await hangUp();
+        return;
       }
-    } catch (_) {
-      if (authPhase == CallAuthPhase.authenticated && session?.id == current.id) {
-        authPhase = CallAuthPhase.failed;
-        error = 'Identity check failed';
-        notifyListeners();
-        await hangUp();
-      }
+      enrollmentRecheckDeferred = false;
     } finally {
       _rechecking = false;
     }
@@ -379,15 +394,27 @@ class CallController extends ChangeNotifier {
     await hangUp();
   }
 
+  bool _playbackAllowed(int generation, String callId) {
+    return _isCurrent(generation) &&
+        !_mediaReleased &&
+        session?.id == callId &&
+        authPhase == CallAuthPhase.authenticated &&
+        phase != CallPhase.ended &&
+        phase != CallPhase.idle &&
+        phase != CallPhase.failed;
+  }
+
   Future<void> _runAuth(int generation) async {
     final verify = authenticatePeer;
     final current = session;
-    if (verify == null || current == null) return;
+    if (verify == null || current == null || _mediaReleased) return;
+    if (_authGeneration == generation) return;
+    _authGeneration = generation;
     authPhase = CallAuthPhase.verifying;
     notifyListeners();
     try {
       final fps = await media.dtlsFingerprints().timeout(authTimeout);
-      if (!_isCurrent(generation) || session?.id != current.id) return;
+      if (!_isCurrent(generation) || session?.id != current.id || _mediaReleased) return;
       if (fps == null) {
         throw StateError('DTLS fingerprint unavailable');
       }
@@ -398,7 +425,8 @@ class CallController extends ChangeNotifier {
         localDtls: fps.local,
         remoteDtls: fps.remote,
       )).timeout(authTimeout);
-      if (!_isCurrent(generation) || session?.id != current.id) return;
+      if (!_isCurrent(generation) || session?.id != current.id || _mediaReleased) return;
+      if (phase == CallPhase.ended || phase == CallPhase.idle || phase == CallPhase.failed) return;
       authPhase = outcome.phase;
       peerFingerprintHex = outcome.fingerprintHex;
       authenticatedPeerDeviceId = outcome.peerDeviceId;
@@ -410,9 +438,13 @@ class CallController extends ChangeNotifier {
         return;
       }
       notifyListeners();
+      if (!_playbackAllowed(generation, current.id)) return;
       await media.setRemotePlaybackEnabled(true);
+      if (!_playbackAllowed(generation, current.id)) {
+        await media.setRemotePlaybackEnabled(false);
+      }
     } catch (e) {
-      if (!_isCurrent(generation)) return;
+      if (!_isCurrent(generation) || _mediaReleased) return;
       authPhase = CallAuthPhase.failed;
       error = e.toString();
       notifyListeners();
@@ -435,6 +467,8 @@ class CallController extends ChangeNotifier {
     _appliedIceSeq.clear();
     _processedAnswers.clear();
     _processedOffers.clear();
+    _authGeneration = null;
+    enrollmentRecheckDeferred = false;
     _disconnectTimer?.cancel();
     phase = CallPhase.idle;
     session = null;
@@ -525,7 +559,8 @@ class CallController extends ChangeNotifier {
         if (callId == null || event.candidate == null) return;
         unawaited(_submitLocalIce(gen, callId, event));
       case CallMediaEventKind.connectionConnected:
-        if (!_isCurrent(gen)) return;
+        if (!_isCurrent(gen) || _mediaReleased) return;
+        if (phase == CallPhase.ended || phase == CallPhase.idle || phase == CallPhase.failed) return;
         _disconnectTimer?.cancel();
         localMediaConnected = true;
         linkQuality = 'good';
@@ -669,6 +704,8 @@ class CallController extends ChangeNotifier {
       await media.disposeMedia();
     }
     localMediaConnected = false;
+    authPhase = CallAuthPhase.idle;
+    authenticatedPeerDeviceId = null;
     _ending = false;
     if (ended) {
       phase = CallPhase.ended;

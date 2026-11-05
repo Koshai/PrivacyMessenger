@@ -6,6 +6,7 @@ import '../../core/network/api_client.dart';
 import '../calling/call_controller.dart';
 import '../calling/models/call_session.dart';
 import 'conversation_controller.dart';
+import 'encrypted_conversation_service.dart';
 import 'models/envelope.dart';
 
 class ConversationScreen extends StatefulWidget {
@@ -16,6 +17,7 @@ class ConversationScreen extends StatefulWidget {
     required this.mls,
     required this.peerUserId,
     required this.peerEmail,
+    this.messaging,
     this.callController,
   });
 
@@ -24,6 +26,7 @@ class ConversationScreen extends StatefulWidget {
   final MlsSessionManager mls;
   final String peerUserId;
   final String peerEmail;
+  final EncryptedConversationService? messaging;
   final CallController? callController;
 
   @override
@@ -44,6 +47,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       mls: widget.mls,
       peerUserId: widget.peerUserId,
       peerEmail: widget.peerEmail,
+      service: widget.messaging,
     )..open();
   }
 

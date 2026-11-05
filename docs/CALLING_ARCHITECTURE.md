@@ -102,7 +102,9 @@ Dedicated Ed25519 call keys. Signed hello + confirm transcript binds call id, bo
 
 ICE connected is not authentication. Remote video is hidden until verification succeeds. Authentication failure ends the call.
 
-Clients pin the messaging fingerprint when the key package is claimed and refuse to replace it automatically (D6). Enrollment is checked before authentication and again while the call is up. Logout clears the local call-signing seed and leaves contact pins in place.
+Clients pin the messaging fingerprint when the key package is claimed and refuse to replace it automatically (D6). Enrollment is checked before authentication and again while the call is up. A revoked device ends the call. An enrollment request that times out or cannot reach the API does not. Logout clears the local call-signing seed and the call-binding inbox, and leaves contact pins in place.
+
+Chat sync and call setup share one MLS decryption pipeline per device (D7). Call-key bindings are written to an encrypted local inbox before the server acknowledgement and are not shown as chat messages.
 
 ## NAT / TURN (D3)
 
