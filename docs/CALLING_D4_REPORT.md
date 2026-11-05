@@ -18,7 +18,7 @@ Manual safety-number trust stays separate from "authenticated device".
 | --- | --- |
 | `go test ./...` with `DATABASE_URL` set and `TURN_RELAY_TEST` unset | pass, including `internal/callauth` PostgreSQL hello/purge and the security cases (forgery, replay, role swap, call id, DTLS mismatch, device replacement, revocation, duplicates, concurrent confirms) |
 | `TestRealWebRTCFingerprintBinding` | pass. Two pion peers, real SDP fingerprints, tampered callee fingerprint fails closed |
-| `TestRelayOnlyDataChannel` | skipped in the green local `go test ./...` because `TURN_RELAY_TEST` was unset. GitHub Actions `turn-relay` on `65adaa9` failed the same way `d96eda2` did: coturn on the runner advertised a non-loopback relay address. The workflow now sets `--external-ip=127.0.0.1` so the relay candidate is reachable on the runner. The test still requires a nominated relay/relay pair and a data-channel payload |
+| `TestRelayOnlyDataChannel` | skipped in the green local `go test ./...` because `TURN_RELAY_TEST` was unset. The GitHub `turn-relay` job must listen and relay on `127.0.0.1` and allow loopback peers; coturn otherwise allocates on a private runner address and refuses the hairpin. The test still requires a nominated relay/relay pair and a data-channel payload |
 | `flutter analyze` | no issues |
 | `flutter test` with `LIVE_E2E=1` | 122 passed, 0 failed, 0 skipped, including live OpenMLS Alice/Bob and `call_auth_test.dart` |
 | Android WebRTC smoke | not re-run on this pass (no new media-stack change). Previous D3 run on emulator-5554 passed after `RECORD_AUDIO` was granted |

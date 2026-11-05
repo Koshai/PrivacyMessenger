@@ -157,6 +157,9 @@ jobs:
           docker run -d --name pm-coturn --network host coturn/coturn:4.6.3 \
             -n --log-file=stdout \
             --listening-port=3478 \
+            --listening-ip=127.0.0.1 \
+            --relay-ip=127.0.0.1 \
+            --allow-loopback-peers \
             --fingerprint \
             --lt-cred-mech \
             --use-auth-secret \
