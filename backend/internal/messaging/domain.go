@@ -49,12 +49,16 @@ const (
 	ContentTypeMLSWelcome  = "application/mls-welcome"
 	ContentTypeMLSCommit   = "application/mls-commit"
 	ContentTypeMLSProposal = "application/mls-proposal"
+	// Call-key binding is MLS application ciphertext. The server stores the
+	// type so clients can route it, and does not inspect the plaintext.
+	ContentTypeCallKeyBinding = "application/call-key-binding"
 )
 
 func IsAllowedContentType(ct string) bool {
 	switch ct {
 	case ContentTypeOpaque, ContentTypeMLSMessage, ContentTypeMLSWelcome,
-		ContentTypeMLSCommit, ContentTypeMLSProposal, "application/octet-stream":
+		ContentTypeMLSCommit, ContentTypeMLSProposal, ContentTypeCallKeyBinding,
+		"application/octet-stream":
 		return true
 	default:
 		return false

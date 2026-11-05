@@ -19,11 +19,38 @@ class MemoryCallAuthStore implements CallAuthStore {
   Future<void> write(String key, String value) async {
     values[key] = value;
   }
+
+  @override
+  Future<void> delete(String key) async {
+    values.remove(key);
+  }
 }
 
 abstract class CallAuthStore {
   Future<String?> read(String key);
   Future<void> write(String key, String value);
+  Future<void> delete(String key);
+}
+
+class IdentityPinConflict implements Exception {
+  const IdentityPinConflict(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+/// Writes [value] only when [key] is absent or already equal.
+/// A different existing value is an identity change and is left untouched.
+Future<void> writePinIfUnchanged(CallAuthStore store, String key, String value) async {
+  final existing = await store.read(key);
+  if (existing == null || existing.isEmpty) {
+    await store.write(key, value);
+    return;
+  }
+  if (existing.toLowerCase() == value.toLowerCase()) return;
+  throw const IdentityPinConflict(
+    'Identity changed. Compare safety numbers before trusting this device.',
+  );
 }
 
 class SecureCallAuthStore implements CallAuthStore {
@@ -37,6 +64,9 @@ class SecureCallAuthStore implements CallAuthStore {
 
   @override
   Future<void> write(String key, String value) => _storage.write(key: key, value: value);
+
+  @override
+  Future<void> delete(String key) => _storage.delete(key: key);
 }
 
 class PeerBinding {
@@ -193,6 +223,12 @@ class CallAuthSession {
       );
     }
     final pinnedMls = await _store.read('call_auth_mls_$peerDevice');
+    if (pinnedMls != null && pinnedMls.isNotEmpty && pinnedMls.length != 64) {
+      return const CallAuthOutcome(
+        phase: CallAuthPhase.failed,
+        error: 'Stored messaging pin is corrupt',
+      );
+    }
     final pinnedUserDevice = await _store.read('call_auth_user_device_$peerUser');
     final bindingCheck = await verifyCallKeyBinding(
       statement: binding.statement,
@@ -215,7 +251,13 @@ class CallAuthSession {
       );
     }
     final enrolled = deviceStillEnrolled;
-    if (enrolled != null && !await enrolled(peerUser, peerDeviceExpected)) {
+    if (enrolled == null) {
+      return const CallAuthOutcome(
+        phase: CallAuthPhase.failed,
+        error: 'Enrollment check unavailable',
+      );
+    }
+    if (!await enrolled(peerUser, peerDeviceExpected)) {
       return const CallAuthOutcome(phase: CallAuthPhase.failed, error: 'Identity revoked');
     }
 
@@ -283,13 +325,13 @@ class CallAuthSession {
       return const CallAuthOutcome(phase: CallAuthPhase.failed, error: 'Peer authentication failed');
     }
     if (pinned == null) {
-      await _writePin(peerDevice, peerKey);
+      await writePinIfUnchanged(_store, 'call_auth_pin_$peerDevice', base64Encode(peerKey));
     }
     if (pinnedMls == null) {
-      await _store.write('call_auth_mls_$peerDevice', _hex(boundMls));
+      await writePinIfUnchanged(_store, 'call_auth_mls_$peerDevice', _hex(boundMls));
     }
     if (pinnedUserDevice == null) {
-      await _store.write('call_auth_user_device_$peerUser', peerDevice);
+      await writePinIfUnchanged(_store, 'call_auth_user_device_$peerUser', peerDevice);
     }
     final storedManual = await _store.read('call_auth_manual_$peerDevice') == '1';
     return CallAuthOutcome(
@@ -317,10 +359,6 @@ class CallAuthSession {
     final raw = await _store.read('call_auth_pin_$peerDevice');
     if (raw == null) return null;
     return base64Decode(raw);
-  }
-
-  Future<void> _writePin(String peerDevice, List<int> key) {
-    return _store.write('call_auth_pin_$peerDevice', base64Encode(key));
   }
 
   List<int> _hexToBytes(String hex) {
@@ -354,13 +392,31 @@ Future<void> persistManualCallTrust(String peerDeviceId) {
 }
 
 /// Records the messaging fingerprint pinned when a key package was claimed.
-/// Call authentication reads this pin. It is not refreshed from the server during a call.
-Future<void> persistMessagingDevicePin(String deviceId, String fingerprintHex) async {
-  try {
-    const storage = FlutterSecureStorage(aOptions: AndroidOptions());
-    await storage.write(
-      key: 'call_auth_mls_$deviceId',
-      value: fingerprintHex.toLowerCase(),
-    );
-  } catch (_) {}
+///
+/// An existing different fingerprint is left in place and reported as
+/// [IdentityPinConflict]. Storage errors propagate. Logout deletes only the
+/// local call-signing seed; contact pins stay so a restart cannot silently
+/// accept a replacement key.
+Future<void> persistMessagingDevicePin(
+  String deviceId,
+  String fingerprintHex, {
+  CallAuthStore? store,
+}) async {
+  final target = store ?? SecureCallAuthStore();
+  final key = 'call_auth_mls_$deviceId';
+  final existing = await target.read(key);
+  if (existing != null && existing.isNotEmpty && existing.length != 64) {
+    throw const IdentityPinConflict('Stored messaging pin is corrupt');
+  }
+  await writePinIfUnchanged(target, key, fingerprintHex.toLowerCase());
+}
+
+/// Removes this device's call-signing seed. Contact pins are not deleted.
+Future<void> clearLocalCallSecret({
+  required String userId,
+  required String deviceId,
+  CallAuthStore? store,
+}) {
+  final target = store ?? SecureCallAuthStore();
+  return target.delete('call_auth_seed_${userId}_$deviceId');
 }

@@ -1,12 +1,14 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:openmls/openmls.dart';
 import 'package:private_messenger/core/crypto/openmls/mls_device_harness.dart';
 import 'package:private_messenger/core/crypto/protocol_messages.dart';
 import 'package:private_messenger/core/network/api_client.dart';
+import 'package:private_messenger/features/calling/call_auth.dart';
 import 'package:private_messenger/features/messaging/models/envelope.dart';
 
 /// Live two-client native OpenMLS ↔ Go API ↔ PostgreSQL harness (C4).
@@ -91,6 +93,7 @@ void main() {
     final aliceUserId = aliceFx['user_id'] as String;
     final bobUserId = bobFx['user_id'] as String;
     final aliceDeviceId = aliceFx['device_id'] as String;
+    final bobDeviceId = bobFx['device_id'] as String;
 
     final alice = await MlsDeviceHarness.create('alice', tempDir);
     final bob = await MlsDeviceHarness.create('bob', tempDir);
@@ -282,6 +285,65 @@ void main() {
       contentType: MlsContentTypes.application,
     );
     expect(second.id, first.id);
+
+    final algo = Ed25519();
+    final pair = await algo.newKeyPair();
+    final callKey = (await pair.extractPublicKey()).bytes;
+    final mls = List<int>.filled(32, 4);
+    final statement = bindingStatementBytes(
+      userId: aliceUserId,
+      deviceId: aliceDeviceId,
+      callKey: callKey,
+      mls: mls,
+    );
+    final sig = await algo.sign(statement, keyPair: pair);
+    final blob = <int>[...sig.bytes, ...statement];
+    final bound = await alice.service.encryptApplication(
+      groupIdHex: alice.groupIdHex!,
+      plaintext: blob,
+    );
+    await api.sendEnvelope(
+      token: aliceToken,
+      conversationId: conversation.conversationId,
+      clientMessageId: 'bind-${DateTime.now().microsecondsSinceEpoch}',
+      ciphertext: bound.bytes,
+      contentType: MlsContentTypes.callKeyBinding,
+    );
+    final bindPending = await api.syncPending(token: bobToken);
+    final bindEnv = bindPending.firstWhere(
+      (e) => e.contentType == MlsContentTypes.callKeyBinding,
+    );
+    expect(bindEnv.senderId, aliceUserId);
+    final opened = await bob.service.processIncoming(
+      groupIdHex: bob.groupIdHex!,
+      messageBytes: bindEnv.ciphertext,
+    );
+    expect(opened, isNotNull);
+    final plain = opened!.plaintext;
+    expect(plain.length, greaterThan(64));
+    final verified = await verifyCallKeyBinding(
+      statement: plain.sublist(64),
+      signature: plain.sublist(0, 64),
+      expectedUserId: aliceUserId,
+      expectedDeviceId: aliceDeviceId,
+      helloCallKey: callKey,
+    );
+    expect(verified.ok, isTrue);
+    final wrongDevice = await verifyCallKeyBinding(
+      statement: plain.sublist(64),
+      signature: plain.sublist(0, 64),
+      expectedUserId: aliceUserId,
+      expectedDeviceId: bobDeviceId,
+      helloCallKey: callKey,
+    );
+    expect(wrongDevice.ok, isFalse);
+    await expectLater(
+      bob.service.processIncoming(
+        groupIdHex: bob.groupIdHex!,
+        messageBytes: List<int>.filled(96, 7),
+      ),
+      throwsA(anything),
+    );
 
     final ids =
         await api.peerIdentities(token: aliceToken, peerUserId: bobUserId);

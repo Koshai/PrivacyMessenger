@@ -19,9 +19,11 @@
 | End calls on logout/session revoke | Yes |
 | `connected` only after client-reported WebRTC indication | Yes (D1.1) — **not** server-verified media |
 | WebRTC DTLS-SRTP media encryption | **D2+** (transport when peers connect) |
-| Dedicated Ed25519 call key, MLS-encrypted binding statement | **D4.1** — not an MLS signature over media |
+| Dedicated Ed25519 call key, MLS-encrypted binding statement | **D4.1** — MLS ciphertext through an established conversation |
 | Remote media hidden until local verification | **D4.1** |
-| In-process call notification without signaling contents | **D5** — not terminated-app ringing |
+| Messaging fingerprint pin refuses a different value | **D6** — conflict is an identity-change error; storage errors propagate |
+| Active-device enrollment required before a call is authenticated | **D6** — a missing check fails closed; revocation during a call hangs up |
+| In-process call notification without signaling contents | **D5** — terminated-process incoming calls are unsupported |
 | TURN short-lived REST credentials | **D3** — secret server-side only |
 
 ## What D2 adds
@@ -70,6 +72,18 @@ Not retained after end:
 - Rate limit is **single-instance** (same limitation as crypto limiter), including TURN credential issuance (30/minute/user).
 - Coturn shared secret must not be committed, logged, or returned by `/calls/ice-config`.
 - TURN operators can observe relayed packet metadata. Relay-only mode hides peer reflexive addresses from the other client at bandwidth cost.
+
+## Identity pins and enrollment (D6)
+
+A messaging fingerprint is written when a key package is claimed. If that device already has a different fingerprint, the stored value stays and the client raises an identity-change error. A corrupt pin and a failed secure-storage write also fail closed. The same value may be written again. Pins survive an ordinary process restart because they live in secure storage.
+
+Logout deletes only this device's call-signing seed (`call_auth_seed_<user>_<device>`). Contact pins are kept, including after a device replacement, until the person compares safety numbers and accepts the new identity. Pins are keyed by device id.
+
+Production call authentication requires an enrollment callback. The callback checks that the peer device is still present for that account. Absence of the callback, a revoked device, or an unexpected replacement device ends verification. While a call is authenticated, the client rechecks enrollment on resume and about once a second, and hangs up when the device is gone or the check itself fails.
+
+The server relays auth frames and reports enrollment presence. The client still verifies the hello signature, the pinned call key, the MLS-decrypted binding, and the DTLS fingerprint. A server-supplied fingerprint is not the pin.
+
+The call-key binding travels as MLS application ciphertext with content type `application/call-key-binding`. The server stores that type and does not decrypt it. The recipient accepts the binding only after OpenMLS decrypts it in the expected conversation and the signed statement matches the account, device, MLS fingerprint, and call public key from the hello. An unrelated ciphertext fails decrypt or verification. Without an established MLS conversation the exchange returns nothing and the call fails closed.
 
 ## Background ringing
 

@@ -243,6 +243,16 @@ void main() {
     expect(outcome.error, 'Identity revoked');
   });
 
+  test('a missing enrollment check fails closed', () async {
+    final outcome = await _runSession(
+      helloCallId: _call,
+      enrolled: true,
+      omitEnrollment: true,
+    );
+    expect(outcome.phase, CallAuthPhase.failed);
+    expect(outcome.error, contains('Enrollment'));
+  });
+
   test('missing authenticator does not present remote media as authenticated', () async {
     final media = FakeCallService();
     var hungUp = false;
@@ -360,6 +370,7 @@ Future<CallAuthOutcome> _runSession({
   required String helloCallId,
   required bool enrolled,
   bool complete = false,
+  bool omitEnrollment = false,
 }) async {
   final algo = Ed25519();
   final peer = await algo.newKeyPair();
@@ -448,7 +459,7 @@ Future<CallAuthOutcome> _runSession({
     deviceId: _aliceDev,
     localMlsFingerprintHex: _hex(_fill(32, 1)),
     store: store,
-    deviceStillEnrolled: (peerUser, peerDevice) async => enrolled,
+    deviceStillEnrolled: omitEnrollment ? null : (peerUser, peerDevice) async => enrolled,
     bindingExchange: ({
       required peerUserId,
       required peerDeviceId,

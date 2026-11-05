@@ -63,7 +63,7 @@ class EncryptedConversationService {
     try {
       final claimed =
           await api.claimKeyPackage(token: token, peerUserId: peerUserId);
-      _trackFingerprint(
+      await _trackFingerprint(
         peerUserId,
         claimed.fingerprintHex,
         deviceId: claimed.deviceId,
@@ -292,15 +292,21 @@ class EncryptedConversationService {
     return false;
   }
 
-  void _trackFingerprint(String peerUserId, String fingerprint, {String? deviceId}) {
+  Future<void> _trackFingerprint(String peerUserId, String fingerprint, {String? deviceId}) async {
+    if (deviceId != null) {
+      try {
+        await persistMessagingDevicePin(deviceId, fingerprint);
+      } on IdentityPinConflict catch (e) {
+        keyChangeWarning = e.message;
+        return;
+      }
+    }
     final prior = _knownFingerprints[peerUserId];
     if (prior != null && prior != fingerprint) {
       keyChangeWarning =
           'Safety number changed for this contact. Verify before continuing.';
+      return;
     }
     _knownFingerprints[peerUserId] = fingerprint;
-    if (deviceId != null) {
-      unawaited(persistMessagingDevicePin(deviceId, fingerprint));
-    }
   }
 }

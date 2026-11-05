@@ -82,6 +82,15 @@ func setup(t *testing.T) (*Service, fakeCalls, party, party, CallView) {
 	return svc, fakeCalls{view: view}, alice, bob, view
 }
 
+func TestAuthWindowExpired(t *testing.T) {
+	svc, _, alice, _, view := setup(t)
+	svc.now = func() time.Time { return view.CreatedAt.Add(AuthWindow + time.Second) }
+	_, err := svc.Submit(context.Background(), helloInput(view, alice, RoleCaller))
+	if err != ErrInvalid {
+		t.Fatalf("expired window: %v", err)
+	}
+}
+
 func helloInput(call CallView, p party, role byte) SubmitInput {
 	msg, err := (Hello{CallID: call.ID, UserID: p.user, DeviceID: p.device, Role: role, Nonce: p.nonce, CallKey: p.pub, MLS: p.mls}).Bytes()
 	if err != nil {

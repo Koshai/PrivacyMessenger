@@ -34,6 +34,8 @@ class CallController extends ChangeNotifier {
     this.iceSubmitAttempts = 3,
     this.authenticatePeer,
     this.authTimeout = const Duration(seconds: 20),
+    this.recheckEnrollment,
+    this.clearLocalSecrets,
   });
 
   final CallingApiClient api;
@@ -47,6 +49,11 @@ class CallController extends ChangeNotifier {
   final int iceSubmitAttempts;
   final CallAuthenticator? authenticatePeer;
   final Duration authTimeout;
+
+  /// Production rechecks enrollment while a call is up. Null in unit tests
+  /// that do not model revocation. A false result ends the call.
+  final Future<bool> Function(String peerUserId, String peerDeviceId)? recheckEnrollment;
+  final Future<void> Function()? clearLocalSecrets;
 
   /// `incoming`, `ongoing`, or `ended`. The kind carries no signaling payload.
   void Function(String kind)? onLifecycle;
@@ -88,6 +95,7 @@ class CallController extends ChangeNotifier {
   int _generation = 0;
   bool _ending = false;
   bool _mediaReleased = false;
+  bool _rechecking = false;
 
   String? _lifecycleKind;
 
@@ -269,6 +277,8 @@ class CallController extends ChangeNotifier {
 
   Future<void> onLogout() async {
     await hangUp();
+    final clear = clearLocalSecrets;
+    if (clear != null) await clear();
   }
 
   /// Leaving the call surface ends the in-progress call.
@@ -281,12 +291,44 @@ class CallController extends ChangeNotifier {
     switch (state) {
       case AppLifecycleState.resumed:
         await reconcileActive();
+        await recheckPeerIdentity();
       case AppLifecycleState.detached:
         await hangUp();
       case AppLifecycleState.paused:
       case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:
         break;
+    }
+  }
+
+  /// Ends the call when the pinned peer is no longer enrolled.
+  /// Cryptographic verification stays on the client; this is the revocation signal.
+  Future<void> recheckPeerIdentity() async {
+    final check = recheckEnrollment;
+    final peer = authenticatedPeerDeviceId;
+    final current = session;
+    if (check == null || peer == null || current == null || _rechecking) return;
+    if (authPhase != CallAuthPhase.authenticated) return;
+    _rechecking = true;
+    try {
+      final peerUser =
+          current.callerUserId == myUserId ? current.calleeUserId : current.callerUserId;
+      final ok = await check(peerUser, peer);
+      if (!ok && authPhase == CallAuthPhase.authenticated && session?.id == current.id) {
+        authPhase = CallAuthPhase.failed;
+        error = 'Identity revoked';
+        notifyListeners();
+        await hangUp();
+      }
+    } catch (_) {
+      if (authPhase == CallAuthPhase.authenticated && session?.id == current.id) {
+        authPhase = CallAuthPhase.failed;
+        error = 'Identity check failed';
+        notifyListeners();
+        await hangUp();
+      }
+    } finally {
+      _rechecking = false;
     }
   }
 
@@ -566,6 +608,9 @@ class CallController extends ChangeNotifier {
     _poll = Timer.periodic(const Duration(seconds: 1), (_) {
       if (phase == CallPhase.connected) notifyListeners();
       unawaited(_pullIce());
+      if (authPhase == CallAuthPhase.authenticated) {
+        unawaited(recheckPeerIdentity());
+      }
     });
   }
 

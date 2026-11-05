@@ -102,6 +102,8 @@ Dedicated Ed25519 call keys. Signed hello + confirm transcript binds call id, bo
 
 ICE connected is not authentication. Remote video is hidden until verification succeeds. Authentication failure ends the call.
 
+Clients pin the messaging fingerprint when the key package is claimed and refuse to replace it automatically (D6). Enrollment is checked before authentication and again while the call is up. Logout clears the local call-signing seed and leaves contact pins in place.
+
 ## NAT / TURN (D3)
 
 - `GET /calls/ice-config` (authenticated, rate-limited) returns STUN/TURN URLs and short-lived coturn REST credentials.
@@ -112,7 +114,7 @@ ICE connected is not authentication. Remote video is hidden until verification s
 - Missing or invalid TURN configuration makes the endpoint return `503 TURN unavailable` with no secret material.
 - Deployment: `docs/TURN_DEPLOYMENT.md`, example config `deploy/coturn/`.
 - Relay connectivity is verified by a data-channel exchange over a nominated relay pair, not by SDP alone.
-- Background ringing (D5) and MLS call binding (D4) are still out of scope.
+- D6 verification matrix: `docs/CALLING_TEST_MATRIX.md`. Security regression: `docs/CALLING_SECURITY_REGRESSION.md`.
 
 ## Module layout
 

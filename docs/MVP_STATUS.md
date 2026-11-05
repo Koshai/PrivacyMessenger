@@ -2,7 +2,7 @@
 
 **Updated:** 2026-11-05  
 **Repository:** https://github.com/Koshai/PrivacyMessenger  
-**D4.1 and D5:** local corrections and in-process calling UX are ready for review. Milestone D stays open. D6–D7 are not started.
+**D6:** calling reliability, security corrections, and platform verification are ready for review. Milestone D stays open. D7 is not started.
 
 ## Milestone progress
 
@@ -11,13 +11,13 @@
 | A — Auth | Complete |
 | B — Friends | Complete |
 | C — E2EE | **Complete (C4)** |
-| D — Calls | **D1.1–D5 ready for review** — D6–D7 not started; Milestone D **not** complete |
+| D — Calls | **D1.1–D6 ready for review** — D7 not started; Milestone D **not** complete |
 | E — Release | Not started |
 
-## D4.1 / D5 limits
+## D6 limits
 
-Call authentication is mandatory and checked on the device. Incoming-call UI while the process is dead is not claimed. Protocol: `docs/CALL_AUTH_PROTOCOL.md`. Reports: `docs/CALLING_D41_REPORT.md`, `docs/CALLING_D5_REPORT.md`.
+Identity pins are not overwritten. Production calls require an enrollment check and hang up if that check later fails. The MLS call-key binding is exercised by two live OpenMLS clients. Terminated-process incoming calls remain unsupported. Physical iPhone testing and several Android device behaviors are release dependencies. Reports: `docs/CALLING_D6_REPORT.md`, `docs/CALLING_TEST_MATRIX.md`, `docs/CALLING_SECURITY_REGRESSION.md`.
 
 ## Next
 
-Review D5 before **D6**. Do not mark Milestone D complete.
+Review D6 before **D7**. Do not mark Milestone D complete.

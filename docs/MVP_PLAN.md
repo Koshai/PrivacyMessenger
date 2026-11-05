@@ -54,7 +54,8 @@
 - **D3** TURN: `docs/CALLING_D3_REPORT.md`, `docs/TURN_DEPLOYMENT.md`.
 - **D4** call authentication and **D4.1** local hello checks, MLS binding, mandatory verification, continuous DTLS checks — `docs/CALLING_D4_REPORT.md`, `docs/CALLING_D41_REPORT.md`, `docs/CALL_AUTH_PROTOCOL.md`.
 - **D5** (for review): in-process Android notification / foreground service and iOS CallKit. Terminated-app ringing is not claimed — `docs/CALLING_D5_REPORT.md`.
-- **D6–D7:** not started. **Milestone D not complete.** **Stop before D6 for review.**
+- **D6** (for review): pin integrity, mandatory enrollment recheck, live MLS binding, lifecycle and regression tests — `docs/CALLING_D6_REPORT.md`.
+- **D7:** not started. **Milestone D not complete.** **Stop before D7 for review.**
 
 ## Milestone E — Release candidate
 

@@ -202,14 +202,15 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
           deviceId: deviceId,
           localMlsFingerprintHex: record.fingerprintHex,
           bindingExchange: channel.exchange,
-          deviceStillEnrolled: (peerUser, peerDevice) async {
-            final listed = await widget.apiClient.peerIdentities(
-              token: _token,
-              peerUserId: peerUser,
-            );
-            return listed.any((e) => e.deviceId == peerDevice);
-          },
+          deviceStillEnrolled: (peerUser, peerDevice) =>
+              _peerEnrolled(peerUser, peerDevice),
         ).run(request);
+      },
+      recheckEnrollment: (peerUser, peerDevice) => _peerEnrolled(peerUser, peerDevice),
+      clearLocalSecrets: () {
+        final userId = widget.authController.state.userId ?? '';
+        final deviceId = widget.authController.state.deviceId ?? '';
+        return clearLocalCallSecret(userId: userId, deviceId: deviceId);
       },
     );
     _calls.onLifecycle = CallPlatformBridge.instance.show;
@@ -217,6 +218,14 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
       _calls.hangUp();
     });
     unawaited(_bootstrap());
+  }
+
+  Future<bool> _peerEnrolled(String peerUser, String peerDevice) async {
+    final listed = await widget.apiClient.peerIdentities(
+      token: _token,
+      peerUserId: peerUser,
+    );
+    return listed.any((e) => e.deviceId == peerDevice);
   }
 
   Future<void> _bootstrap() async {
