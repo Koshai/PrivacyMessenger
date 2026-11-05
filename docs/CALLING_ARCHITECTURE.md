@@ -96,10 +96,17 @@ Camera is never activated before initiation or acceptance. Video `getUserMedia` 
 
 SDP and ICE exist only while the call is non-terminal. On end they are deleted atomically with the session transition. Metadata (ids, media type, end reason, timestamps) may remain for missed-call UX.
 
-## NAT / TURN
+## NAT / TURN (D3)
 
-- D2: injectable `IceServerConfig` with test STUN by default.
-- **D3 (not done):** short-lived TURN credentials; relay verification. Do not claim production NAT traversal yet.
+- `GET /calls/ice-config` (authenticated, rate-limited) returns STUN/TURN URLs and short-lived coturn REST credentials.
+- Shared secret stays on the API (`TURN_SHARED_SECRET`). Clients never receive it.
+- Username form is `<expiry-unix>:<user-id>`; credential is base64(HMAC-SHA1(secret, username)).
+- Flutter `WebRtcCallService` loads a fresh config for every new peer connection.
+- Direct mode uses the returned servers. Relay-only mode sets `iceTransportPolicy: relay` (`CALL_RELAY_ONLY` dart-define or `IceServerConfig.relayOnly`).
+- Missing or invalid TURN configuration makes the endpoint return `503 TURN unavailable` with no secret material.
+- Deployment: `docs/TURN_DEPLOYMENT.md`, example config `deploy/coturn/`.
+- Relay connectivity is verified by a data-channel exchange over a nominated relay pair, not by SDP alone.
+- Background ringing (D5) and MLS call binding (D4) are still out of scope.
 
 ## Module layout
 

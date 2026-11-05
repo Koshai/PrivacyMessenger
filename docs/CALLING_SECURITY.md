@@ -20,7 +20,7 @@
 | `connected` only after client-reported WebRTC indication | Yes (D1.1) — **not** server-verified media |
 | WebRTC DTLS-SRTP media encryption | **D2+** (transport when peers connect) |
 | Cryptographic call-peer binding to MLS device identity | **D4** (not claimed) |
-| TURN short-lived credentials | **D3** |
+| TURN short-lived REST credentials | **D3** — secret server-side only |
 
 ## What D2 adds
 
@@ -29,9 +29,10 @@
 | Client media stack (`flutter_webrtc` 1.6.3 MIT) | Yes |
 | Mic/camera only after explicit user action | Yes |
 | Dispose tracks / renderers / PC on end | Yes |
-| Injectable ICE servers (STUN now; TURN later) | Yes |
+| Injectable ICE servers (STUN + short-lived TURN) | Yes (D3) |
+| Relay-only ICE policy | Yes (D3) |
 | Reliable background ringing | **No** (D5) |
-| Production NAT traversal / TURN relay proof | **No** (D3) |
+| TURN relay path exercised (local coturn + pion) | Yes (D3). Production NAT still depends on a correctly deployed coturn |
 
 ## Honest media-security statement
 
@@ -66,7 +67,9 @@ Not retained after end:
 - Busy / simultaneous active calls → rejected under transactional control.
 - Oversized SDP/ICE → 413.
 - Stale concurrent updates → rejected via version checks.
-- Rate limit is **single-instance** (same limitation as crypto limiter).
+- Rate limit is **single-instance** (same limitation as crypto limiter), including TURN credential issuance (30/minute/user).
+- Coturn shared secret must not be committed, logged, or returned by `/calls/ice-config`.
+- TURN operators can observe relayed packet metadata. Relay-only mode hides peer reflexive addresses from the other client at bandwidth cost.
 
 ## Background ringing
 

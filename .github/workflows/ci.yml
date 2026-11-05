@@ -123,11 +123,6 @@ jobs:
           for f in migrations/*.up.sql; do
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
           done
-      - name: Seed Alice/Bob fixtures
-        working-directory: backend
-        run: |
-          go run ./cmd/e2eseed > "$RUNNER_TEMP/live_e2e_fixture.json"
-          echo "LIVE_E2E_FIXTURE=$RUNNER_TEMP/live_e2e_fixture.json" >> "$GITHUB_ENV"
       - name: Start API
         working-directory: backend
         run: |
@@ -149,3 +144,35 @@ jobs:
         if: always()
         run: |
           if [ -f "$RUNNER_TEMP/api.pid" ]; then kill "$(cat "$RUNNER_TEMP/api.pid")" || true; fi
+
+  turn-relay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.10"
+      - name: Start coturn
+        run: |
+          docker run -d --name pm-coturn --network host coturn/coturn:4.6.3 \
+            -n --log-file=stdout \
+            --listening-port=3478 \
+            --fingerprint \
+            --lt-cred-mech \
+            --use-auth-secret \
+            --static-auth-secret=local-dev-turn-secret \
+            --realm=privacy.test \
+            --min-port=49160 --max-port=49200 \
+            --no-cli --no-multicast-peers
+          sleep 2
+          docker logs pm-coturn | tail -n 40
+      - name: Relay-only data channel
+        working-directory: backend
+        env:
+          TURN_RELAY_TEST: "1"
+          TURN_TEST_SECRET: local-dev-turn-secret
+          TURN_TEST_URL: turn:127.0.0.1:3478?transport=udp
+        run: go test ./internal/turn/ -count=1 -run TestRelayOnlyDataChannel -v
+      - name: Stop coturn
+        if: always()
+        run: docker rm -f pm-coturn || true

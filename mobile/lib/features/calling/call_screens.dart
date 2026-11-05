@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
@@ -208,22 +210,45 @@ class _RoundButton extends StatelessWidget {
 }
 
 /// Hosts call UI over the authenticated shell when a call is active.
-class CallHost extends StatelessWidget {
+class CallHost extends StatefulWidget {
   const CallHost({super.key, required this.controller, required this.child});
 
   final CallController controller;
   final Widget child;
 
   @override
+  State<CallHost> createState() => _CallHostState();
+}
+
+class _CallHostState extends State<CallHost> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    unawaited(widget.controller.onAppLifecycle(state));
+  }
+
+  @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: controller,
+      animation: widget.controller,
       builder: (context, _) {
-        final active = controller.phase != CallPhase.idle;
+        final active = widget.controller.phase != CallPhase.idle;
         return Stack(
           children: [
-            child,
-            if (active) Positioned.fill(child: ActiveCallScreen(controller: controller)),
+            widget.child,
+            if (active)
+              Positioned.fill(child: ActiveCallScreen(controller: widget.controller)),
           ],
         );
       },

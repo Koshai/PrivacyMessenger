@@ -17,6 +17,7 @@ type RouterDependencies struct {
 	CryptoHandler        *CryptoHandler
 	RealtimeHandler      *RealtimeHandler
 	CallingHandler       *CallingHandler
+	TurnHandler          *TurnHandler
 }
 
 // NewConfiguredRouter is the central router factory.
@@ -109,6 +110,15 @@ func NewConfiguredRouter(
 				mux,
 				deps.SessionAuthenticator,
 				deps.CallingHandler,
+			)
+		}
+		if deps.TurnHandler != nil {
+			mux.Handle(
+				"GET /calls/ice-config",
+				RequireAuthentication(
+					deps.SessionAuthenticator,
+					http.HandlerFunc(deps.TurnHandler.IceConfig),
+				),
 			)
 		}
 	}

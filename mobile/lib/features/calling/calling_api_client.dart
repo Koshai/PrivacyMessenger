@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../../core/network/api_client.dart';
+import 'ice_servers.dart';
 import 'models/call_session.dart';
 
 /// Thin HTTP client for Go calling endpoints (D1/D1.1).
@@ -113,6 +114,30 @@ class CallingApiClient {
         .whereType<Map<String, dynamic>>()
         .map(IceCandidateDto.fromJson)
         .toList();
+  }
+
+  Future<IceServerConfig> iceConfig({
+    required String token,
+    bool relayOnly = false,
+  }) async {
+    final response = await _send(
+      () => client.get(
+        baseUri.resolve('/calls/ice-config'),
+        headers: _headers(token),
+      ),
+    );
+    if (response.statusCode == 503) {
+      throw const ApiException(
+        'TURN unavailable',
+        kind: ApiErrorKind.server,
+        statusCode: 503,
+      );
+    }
+    _ensure(response, ok: {200});
+    return IceServerConfig.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+      relayOnly: relayOnly,
+    );
   }
 
   Future<CallSession?> active({required String token}) async {

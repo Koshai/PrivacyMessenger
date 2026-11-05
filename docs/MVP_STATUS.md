@@ -1,8 +1,9 @@
 # PrivacyMessenger MVP Status
 
-**Updated:** 2026-11-04  
+**Updated:** 2026-11-05  
 **Repository:** https://github.com/Koshai/PrivacyMessenger  
-**Remote `origin/master`:** C complete; D1.1 + D2 local for review (see `docs/CALLING_D2_REPORT.md`)
+**Remote `origin/master`:** `f57cd32fb82951beb6b213c894956be0144251cd`  
+**D2.1 + D3:** local working tree, not pushed. No GitHub Actions run for this change.
 
 ## Milestone progress
 
@@ -11,24 +12,21 @@
 | A — Auth | Complete |
 | B — Friends | Complete |
 | C — E2EE | **Complete (C4)** |
-| D — Calls | **D1.1 + D2 complete for review** — D3–D7 not started; Milestone D **not** complete |
+| D — Calls | **D1.1, D2, D2.1, D3 ready for review** — D4–D7 not started; Milestone D **not** complete |
 | E — Release | Not started |
 
-## D1.1 / D2 gates (local)
+## D2.1 / D3 gates (this machine)
 
 | Gate | Result |
 | --- | --- |
-| `go test ./...` | Pass |
-| Calling Postgres integration (simultaneous initiate, lifecycle, privacy) | Pass |
-| Calling HTTP handler tests | Pass |
-| `flutter analyze` | Pass (no issues) |
-| `flutter test test/features/calling` | Pass |
-| `flutter test` (excl. live API fixture drift) | Unit/widget pass; live OpenMLS e2e may fail if seeded identities revoked |
-| `flutter build apk --debug` | Pass |
-| Android emulator native WebRTC smoke | **Pass** (`webrtc_android_smoke_test` on `emulator-5554`) |
-| iOS full build | **Skipped** (no Xcode on Windows host); Info.plist mic/camera keys added |
-| Production TURN / background ringing | Not claimed |
+| `go test ./...` with `DATABASE_URL` | Pass (auth, calling, crypto, e2e, friends, httpapi, messaging, turn) |
+| TURN relay `TestRelayOnlyDataChannel` (coturn 4.6.3, relay-only, data channel `relay-ok`) | Pass (2.31s) |
+| `flutter analyze` | No issues |
+| `flutter test` including live OpenMLS E2E (`LIVE_E2E=1`, fresh `e2eseed` per run) | **117 passed, 0 failed, 0 skipped** |
+| Android debug APK + emulator WebRTC smoke | **Pass** on `emulator-5554` (mic granted; ungranted run hung on the permission dialog) |
+| iOS `flutter build ios` | **Not run here** (Windows). CI job `ios-compile` exists and was not triggered |
+| GitHub Actions | **Not run** (changes not pushed) |
 
 ## Next
 
-Review D1.1 + D2 → then **D3 TURN**. Do not mark Milestone D complete until D6/D7 gates pass.
+Review D3 → then **D4** (MLS/device binding for calls). Do not mark Milestone D complete.

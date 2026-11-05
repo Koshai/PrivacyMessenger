@@ -22,6 +22,7 @@ import (
 	"example.com/private-messenger/backend/internal/httpapi"
 	"example.com/private-messenger/backend/internal/messaging"
 	"example.com/private-messenger/backend/internal/realtime"
+	"example.com/private-messenger/backend/internal/turn"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -136,6 +137,11 @@ func main() {
 	callingHandler := httpapi.NewCallingHandler(callingService, hub)
 	callingService.WithNotifier(callingHandler)
 
+	turnHandler, err := loadTurnHandler()
+	if err != nil {
+		log.Fatalf("TURN configuration: %v", err)
+	}
+
 	logoutHandler := httpapi.NewLogoutHandler(sessionRepository).
 		WithDisconnecter(realtimeHandler).
 		WithCallEnder(callingService)
@@ -170,6 +176,7 @@ func main() {
 			CryptoHandler:        cryptoHandler,
 			RealtimeHandler:      realtimeHandler,
 			CallingHandler:       callingHandler,
+			TurnHandler:          turnHandler,
 		},
 	)
 
@@ -225,4 +232,45 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Graceful shutdown failed: %v", err)
 	}
+}
+
+func loadTurnHandler() (*httpapi.TurnHandler, error) {
+	secret := strings.TrimSpace(os.Getenv("TURN_SHARED_SECRET"))
+	if secret == "" {
+		log.Printf("TURN credentials disabled (TURN_SHARED_SECRET unset)")
+		return httpapi.NewTurnHandler(nil), nil
+	}
+	ttl := 10 * time.Minute
+	if raw := strings.TrimSpace(os.Getenv("TURN_TTL_SECONDS")); raw != "" {
+		seconds, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, err
+		}
+		ttl = time.Duration(seconds) * time.Second
+	}
+	cfg := turn.Config{
+		SharedSecret: secret,
+		TURNURLs:     splitCSV(os.Getenv("TURN_URLS")),
+		STUNURLs:     splitCSV(os.Getenv("TURN_STUN_URLS")),
+		TTL:          ttl,
+		Realm:        strings.TrimSpace(os.Getenv("TURN_REALM")),
+	}
+	svc, err := turn.NewService(cfg, 30)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("TURN credentials enabled (ttl=%s urls=%d)", ttl, len(cfg.TURNURLs))
+	return httpapi.NewTurnHandler(svc), nil
+}
+
+func splitCSV(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

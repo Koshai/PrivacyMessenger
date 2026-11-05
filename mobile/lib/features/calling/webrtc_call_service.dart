@@ -8,10 +8,16 @@ import 'models/call_session.dart';
 
 /// Production WebRTC implementation using flutter_webrtc 1.6.3.
 class WebRtcCallService implements CallService {
-  WebRtcCallService({IceServerConfig? iceServers})
-      : _iceServers = iceServers ?? const IceServerConfig();
+  WebRtcCallService({
+    this.loadIceConfig,
+    IceServerConfig? iceServers,
+    this.relayOnly = false,
+  }) : _fallback = iceServers ?? const IceServerConfig();
 
-  final IceServerConfig _iceServers;
+  /// Fetches fresh short-lived ICE credentials for each new peer connection.
+  final Future<IceServerConfig> Function()? loadIceConfig;
+  final IceServerConfig _fallback;
+  final bool relayOnly;
   final _events = StreamController<CallMediaEvent>.broadcast();
   RTCVideoRenderer _localRenderer = RTCVideoRenderer();
   RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
@@ -54,12 +60,28 @@ class WebRtcCallService implements CallService {
   }) =>
       _prepare(enableVideo: enableVideo);
 
+  Future<IceServerConfig> _resolveIce() async {
+    final loaded = loadIceConfig == null ? _fallback : await loadIceConfig!();
+    final config = loaded.copyWith(relayOnly: relayOnly || loaded.relayOnly);
+    if (config.unavailableReason != null) {
+      throw StateError('TURN unavailable: ${config.unavailableReason}');
+    }
+    if (config.isExpired) {
+      throw StateError('TURN credentials expired');
+    }
+    if (config.relayOnly && !config.hasTurn) {
+      throw StateError('TURN unavailable');
+    }
+    return config;
+  }
+
   Future<void> _prepare({required bool enableVideo}) async {
+    final ice = await _resolveIce();
     await disposeMedia();
     await _ensureRenderers();
     _pc = await createPeerConnection({
-      'iceServers': _iceServers.toFlutterWebRtcIceServers(),
-      if (_iceServers.relayOnly) 'iceTransportPolicy': 'relay',
+      'iceServers': ice.toFlutterWebRtcIceServers(),
+      if (ice.relayOnly) 'iceTransportPolicy': 'relay',
     });
     _pc!.onIceCandidate = (RTCIceCandidate c) {
       if (c.candidate == null || c.candidate!.isEmpty) return;

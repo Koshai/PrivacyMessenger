@@ -15,6 +15,8 @@ class FakeCallService implements CallService {
   bool disposed = false;
   bool prepared = false;
   int prepareCount = 0;
+  int disposeCount = 0;
+  String? failCandidateContaining;
   final List<String> remoteIce = [];
   int applyAnswerCount = 0;
 
@@ -26,6 +28,10 @@ class FakeCallService implements CallService {
 
   @override
   Object? get remoteRenderer => null;
+
+  void emit(CallMediaEvent event) {
+    _events.add(event);
+  }
 
   void emitConnected() {
     _events.add(const CallMediaEvent(kind: CallMediaEventKind.connectionConnected));
@@ -88,6 +94,10 @@ class FakeCallService implements CallService {
     String? sdpMid,
     int? sdpMLineIndex,
   }) async {
+    if (failCandidateContaining != null &&
+        candidate.contains(failCandidateContaining!)) {
+      throw StateError('remote ice failed');
+    }
     remoteIce.add(candidate);
   }
 
@@ -113,6 +123,7 @@ class FakeCallService implements CallService {
 
   @override
   Future<void> disposeMedia() async {
+    disposeCount++;
     disposed = true;
     prepared = false;
   }

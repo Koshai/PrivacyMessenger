@@ -14,15 +14,19 @@ import 'package:private_messenger/features/messaging/models/envelope.dart';
 /// Requires:
 /// - `LIVE_E2E=1`
 /// - `API_BASE_URL` (e.g. http://127.0.0.1:4000)
-/// - `LIVE_E2E_FIXTURE` path to JSON produced by `backend/cmd/e2eseed`
+/// - `DATABASE_URL` so each run can mint isolated users/devices via `go run ./cmd/e2eseed`
+///
+/// A previous run revokes Alice's device. Reusing that device fails registration
+/// with "identity revoked". This harness therefore seeds a new Alice/Bob pair
+/// for every test and never reuses a persisted fixture file.
 void main() {
   final enabled = Platform.environment['LIVE_E2E'] == '1';
   final apiBase = Platform.environment['API_BASE_URL'];
-  final fixturePath = Platform.environment['LIVE_E2E_FIXTURE'];
+  final databaseURL = Platform.environment['DATABASE_URL'];
 
-  if (!enabled || apiBase == null || fixturePath == null) {
+  if (!enabled || apiBase == null || databaseURL == null || databaseURL.isEmpty) {
     test(
-      'live two-client E2E skipped (set LIVE_E2E=1, API_BASE_URL, LIVE_E2E_FIXTURE)',
+      'live two-client E2E skipped (set LIVE_E2E=1, API_BASE_URL, DATABASE_URL)',
       () {},
       skip: 'Live E2E env not configured',
     );
@@ -35,14 +39,42 @@ void main() {
 
   setUpAll(() async {
     await Openmls.init();
-    fixture =
-        jsonDecode(File(fixturePath).readAsStringSync()) as Map<String, dynamic>;
     api = ApiClient(client: http.Client(), baseUri: Uri.parse(apiBase));
     expect(await api.checkHealth(), isTrue);
   });
 
+  Future<Map<String, dynamic>> seedFreshIdentities() async {
+    final backend = Directory(
+      Platform.environment['E2E_BACKEND_DIR'] ?? '../backend',
+    );
+    if (!await backend.exists()) {
+      throw StateError('backend dir not found at ${backend.path}');
+    }
+    final result = await Process.run(
+      'go',
+      ['run', './cmd/e2eseed'],
+      workingDirectory: backend.path,
+      environment: {
+        ...Platform.environment,
+        'DATABASE_URL': databaseURL,
+      },
+    );
+    if (result.exitCode != 0) {
+      throw StateError(
+        'e2eseed failed (${result.exitCode}): ${result.stderr}',
+      );
+    }
+    final raw = (result.stdout as String).trim();
+    final decoded = jsonDecode(raw);
+    if (decoded is! Map<String, dynamic>) {
+      throw StateError('e2eseed returned unexpected JSON');
+    }
+    return decoded;
+  }
+
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('pm_live_e2e_');
+    fixture = await seedFreshIdentities();
   });
 
   tearDown(() async {

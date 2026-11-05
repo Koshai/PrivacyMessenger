@@ -159,9 +159,17 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
     _realtime = RealtimeClient(
       wsBaseUri: base.replace(scheme: base.scheme == 'https' ? 'wss' : 'ws'),
     );
+    final callingApi = CallingApiClient(client: http.Client(), baseUri: base);
+    const relayOnly = bool.fromEnvironment('CALL_RELAY_ONLY');
     _calls = CallController(
-      api: CallingApiClient(client: http.Client(), baseUri: base),
-      media: WebRtcCallService(),
+      api: callingApi,
+      media: WebRtcCallService(
+        relayOnly: relayOnly,
+        loadIceConfig: () => callingApi.iceConfig(
+          token: _token,
+          relayOnly: relayOnly,
+        ),
+      ),
       myUserId: widget.authController.state.userId ?? '',
       tokenProvider: () => _token,
       realtime: _realtime,
