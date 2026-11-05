@@ -66,5 +66,9 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Private Messenger needs microphone access for voice and video calls.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Private Messenger needs camera access for video calls.</string>
 </dict>
 </plist>

@@ -19,6 +19,7 @@ func RegisterCallingRoutes(
 	mux.Handle("POST /calls/{callID}/hangup", protect(handler.HangUp))
 	mux.Handle("PUT /calls/{callID}/offer", protect(handler.SetOffer))
 	mux.Handle("PUT /calls/{callID}/answer", protect(handler.SetAnswer))
+	mux.Handle("POST /calls/{callID}/connected", protect(handler.MarkConnected))
 	mux.Handle("POST /calls/{callID}/ice", protect(handler.AddICE))
 	mux.Handle("GET /calls/{callID}/ice", protect(handler.ListICE))
 }

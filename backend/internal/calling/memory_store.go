@@ -11,7 +11,7 @@ import (
 type memoryStore struct {
 	mu       sync.Mutex
 	sessions map[uuid.UUID]Session
-	byClient map[string]uuid.UUID // caller|clientCallID
+	byClient map[string]uuid.UUID
 	ice      map[uuid.UUID][]ICECandidate
 	iceSeq   map[uuid.UUID]int64
 }
@@ -27,18 +27,6 @@ func NewMemoryStore() Store {
 
 func clientKey(caller uuid.UUID, clientCallID string) string {
 	return caller.String() + "|" + clientCallID
-}
-
-func (m *memoryStore) CreateSession(_ context.Context, session Session) (Session, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	key := clientKey(session.CallerUserID, session.ClientCallID)
-	if id, ok := m.byClient[key]; ok {
-		return m.sessions[id], nil
-	}
-	m.sessions[session.ID] = session
-	m.byClient[key] = session.ID
-	return session, nil
 }
 
 func (m *memoryStore) GetByID(_ context.Context, callID uuid.UUID) (Session, error) {
@@ -75,30 +63,63 @@ func (m *memoryStore) FindActiveForUser(_ context.Context, userID uuid.UUID) (Se
 	return Session{}, false, nil
 }
 
-func (m *memoryStore) UpdateSession(_ context.Context, session Session) (Session, error) {
+func (m *memoryStore) CreateSessionExclusive(_ context.Context, session Session) (Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.sessions[session.ID]; !ok {
+	key := clientKey(session.CallerUserID, session.ClientCallID)
+	if id, ok := m.byClient[key]; ok {
+		return cloneSession(m.sessions[id]), nil
+	}
+	for _, s := range m.sessions {
+		if s.State == StateEnded {
+			continue
+		}
+		if s.CallerUserID == session.CallerUserID || s.CalleeUserID == session.CallerUserID ||
+			s.CallerUserID == session.CalleeUserID || s.CalleeUserID == session.CalleeUserID {
+			return Session{}, ErrBusy
+		}
+	}
+	session.Version = 0
+	m.sessions[session.ID] = session
+	m.byClient[key] = session.ID
+	return cloneSession(session), nil
+}
+
+func (m *memoryStore) UpdateSessionIfVersion(_ context.Context, expectedVersion int64, session Session) (Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.sessions[session.ID]
+	if !ok {
 		return Session{}, ErrCallMissing
 	}
+	if cur.Version != expectedVersion {
+		return Session{}, ErrStaleUpdate
+	}
+	session.Version = expectedVersion + 1
 	m.sessions[session.ID] = session
 	return cloneSession(session), nil
 }
 
-func (m *memoryStore) ClearSignaling(_ context.Context, callID uuid.UUID) error {
+func (m *memoryStore) EndSessionAtomic(_ context.Context, expectedVersion int64, session Session) (Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, ok := m.sessions[callID]
+	cur, ok := m.sessions[session.ID]
 	if !ok {
-		return ErrCallMissing
+		return Session{}, ErrCallMissing
 	}
-	s.SDPOffer = nil
-	s.SDPAnswer = nil
-	m.sessions[callID] = s
-	return nil
+	if cur.Version != expectedVersion {
+		return Session{}, ErrStaleUpdate
+	}
+	session.Version = expectedVersion + 1
+	session.SDPOffer = nil
+	session.SDPAnswer = nil
+	m.sessions[session.ID] = session
+	delete(m.ice, session.ID)
+	delete(m.iceSeq, session.ID)
+	return cloneSession(session), nil
 }
 
-func (m *memoryStore) InsertICE(_ context.Context, ice ICECandidate) (ICECandidate, bool, error) {
+func (m *memoryStore) InsertICEExclusive(_ context.Context, ice ICECandidate) (ICECandidate, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.sessions[ice.CallID]; !ok {
@@ -108,6 +129,9 @@ func (m *memoryStore) InsertICE(_ context.Context, ice ICECandidate) (ICECandida
 		if existing.SenderUserID == ice.SenderUserID && existing.ClientICEID == ice.ClientICEID {
 			return existing, false, nil
 		}
+	}
+	if len(m.ice[ice.CallID]) >= MaxICEPerCall {
+		return ICECandidate{}, false, ErrPayloadTooLarge
 	}
 	m.iceSeq[ice.CallID]++
 	ice.Seq = m.iceSeq[ice.CallID]
@@ -131,14 +155,6 @@ func (m *memoryStore) ListICEAfter(_ context.Context, callID uuid.UUID, afterSeq
 	return out, nil
 }
 
-func (m *memoryStore) DeleteICEForCall(_ context.Context, callID uuid.UUID) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.ice, callID)
-	delete(m.iceSeq, callID)
-	return nil
-}
-
 func (m *memoryStore) ListExpiredRinging(_ context.Context, now time.Time, limit int) ([]Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -152,12 +168,6 @@ func (m *memoryStore) ListExpiredRinging(_ context.Context, now time.Time, limit
 		}
 	}
 	return out, nil
-}
-
-func (m *memoryStore) CountICE(_ context.Context, callID uuid.UUID) (int, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.ice[callID]), nil
 }
 
 func cloneSession(s Session) Session {

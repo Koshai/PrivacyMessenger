@@ -49,8 +49,9 @@
 **Goal:** WebRTC calling with authenticated signaling, mute/camera, timeouts, STUN/TURN docs, no media recording.
 
 **Status:**
-- **D1** (local for review): Go `internal/calling` signaling, HTTP API, WS hints, migration `000008`, tests — see `docs/CALLING_D1_REPORT.md`, `docs/CALLING_ARCHITECTURE.md`, `docs/CALLING_SECURITY.md`.
-- **D2–D7:** not started. **Milestone D not complete** until two-client media + platform checks pass. **Stop after each Dn for review when requested.**
+- **D1** signaling + **D1.1** hardening: Go calling module, HTTP/WS, concurrency, device bind, privacy errors — see `docs/CALLING_D1_REPORT.md`, `docs/CALLING_D2_REPORT.md`.
+- **D2** (for review): pinned `flutter_webrtc` 1.6.3, `CallService`/`CallController`, audio+video, foreground accept/decline, STUN-injectable ICE — see `docs/CALLING_D2_REPORT.md`, `docs/CALLING_ARCHITECTURE.md`, `docs/CALLING_SECURITY.md`.
+- **D3–D7:** not started (TURN, MLS call binding, background ringing, broader gates). **Milestone D not complete.** **Stop before D3 for review.**
 
 ## Milestone E — Release candidate
 

@@ -9,12 +9,12 @@ import (
 )
 
 type Service struct {
-	store      Store
-	friends    FriendshipChecker
-	blocks     BlockChecker
-	notifier   Notifier
-	limiter    *RateLimiter
-	now        func() time.Time
+	store       Store
+	friends     FriendshipChecker
+	blocks      BlockChecker
+	notifier    Notifier
+	limiter     *RateLimiter
+	now         func() time.Time
 	ringTimeout time.Duration
 }
 
@@ -69,22 +69,16 @@ func (s *Service) Initiate(
 	}
 
 	if existing, err := s.store.GetByCallerClientID(ctx, callerUserID, clientCallID); err == nil {
+		if existing.CalleeUserID != calleeUserID ||
+			existing.CallerDeviceID != callerDeviceID ||
+			existing.MediaType != mediaType {
+			return InitiateResult{}, ErrReplay
+		}
 		return InitiateResult{Session: existing, Created: false}, nil
 	}
 
 	if err := s.authorizePair(ctx, callerUserID, calleeUserID); err != nil {
 		return InitiateResult{}, err
-	}
-
-	if _, busy, err := s.store.FindActiveForUser(ctx, callerUserID); err != nil {
-		return InitiateResult{}, err
-	} else if busy {
-		return InitiateResult{}, ErrBusy
-	}
-	if _, busy, err := s.store.FindActiveForUser(ctx, calleeUserID); err != nil {
-		return InitiateResult{}, err
-	} else if busy {
-		return InitiateResult{}, ErrBusy
 	}
 
 	now := s.now().UTC()
@@ -99,19 +93,20 @@ func (s *Service) Initiate(
 		RingExpiresAt:  now.Add(s.ringTimeout),
 		CreatedAt:      now,
 		UpdatedAt:      now,
+		Version:        0,
 	}
-	created, err := s.store.CreateSession(ctx, session)
+	created, err := s.store.CreateSessionExclusive(ctx, session)
 	if err != nil {
-		// Race on unique client_call_id — return existing.
-		if existing, getErr := s.store.GetByCallerClientID(ctx, callerUserID, clientCallID); getErr == nil {
-			return InitiateResult{Session: existing, Created: false}, nil
-		}
 		return InitiateResult{}, err
 	}
 	wasCreated := created.ID == session.ID
 	if wasCreated {
 		s.notify(calleeUserID, "call.ringing", created.ID)
 		s.notify(callerUserID, "call.ringing", created.ID)
+	} else if created.CalleeUserID != calleeUserID ||
+		created.CallerDeviceID != callerDeviceID ||
+		created.MediaType != mediaType {
+		return InitiateResult{}, ErrReplay
 	}
 	return InitiateResult{Session: created, Created: wasCreated}, nil
 }
@@ -131,7 +126,10 @@ func (s *Service) Accept(
 		return Session{}, ErrNotAuthorized
 	}
 	if session.State == StateAccepted || session.State == StateConnected {
-		return session, nil // idempotent
+		if session.CalleeDeviceID != nil && *session.CalleeDeviceID != actorDeviceID {
+			return Session{}, ErrDeviceConflict
+		}
+		return session, nil
 	}
 	if session.State != StateRinging {
 		return Session{}, ErrIllegalTransition
@@ -139,12 +137,13 @@ func (s *Service) Accept(
 	if err := s.ensureNotExpired(ctx, &session); err != nil {
 		return Session{}, err
 	}
+	expected := session.Version
 	now := s.now().UTC()
 	session.State = StateAccepted
 	session.CalleeDeviceID = &actorDeviceID
 	session.AcceptedAt = &now
 	session.UpdatedAt = now
-	updated, err := s.store.UpdateSession(ctx, session)
+	updated, err := s.store.UpdateSessionIfVersion(ctx, expected, session)
 	if err != nil {
 		return Session{}, err
 	}
@@ -206,7 +205,6 @@ func (s *Service) HangUp(ctx context.Context, actorUserID, callID uuid.UUID) (Se
 	if session.State != StateAccepted && session.State != StateConnected && session.State != StateRinging {
 		return Session{}, ErrIllegalTransition
 	}
-	// Caller may hang up while ringing (same as cancel) or either party after accept.
 	if session.State == StateRinging && session.CallerUserID != actorUserID {
 		return Session{}, ErrNotAuthorized
 	}
@@ -222,11 +220,11 @@ func (s *Service) SetOffer(ctx context.Context, actorUserID, callID uuid.UUID, s
 		return Session{}, err
 	}
 	sdp = strings.TrimSpace(sdp)
-	if sdp == "" || len(sdp) > MaxSDPPChars {
-		if len(sdp) > MaxSDPPChars {
-			return Session{}, ErrPayloadTooLarge
-		}
+	if sdp == "" {
 		return Session{}, ErrInvalidInput
+	}
+	if len(sdp) > MaxSDPPChars {
+		return Session{}, ErrPayloadTooLarge
 	}
 	session, err := s.loadAuthorized(ctx, actorUserID, callID)
 	if err != nil {
@@ -239,15 +237,16 @@ func (s *Service) SetOffer(ctx context.Context, actorUserID, callID uuid.UUID, s
 		return Session{}, ErrIllegalTransition
 	}
 	if session.SDPOffer != nil && *session.SDPOffer == sdp {
-		return session, nil // idempotent duplicate
+		return session, nil
 	}
 	if session.SDPOffer != nil && *session.SDPOffer != sdp {
 		return Session{}, ErrReplay
 	}
+	expected := session.Version
 	now := s.now().UTC()
 	session.SDPOffer = &sdp
 	session.UpdatedAt = now
-	updated, err := s.store.UpdateSession(ctx, session)
+	updated, err := s.store.UpdateSessionIfVersion(ctx, expected, session)
 	if err != nil {
 		return Session{}, err
 	}
@@ -260,11 +259,11 @@ func (s *Service) SetAnswer(ctx context.Context, actorUserID, callID uuid.UUID, 
 		return Session{}, err
 	}
 	sdp = strings.TrimSpace(sdp)
-	if sdp == "" || len(sdp) > MaxSDPPChars {
-		if len(sdp) > MaxSDPPChars {
-			return Session{}, ErrPayloadTooLarge
-		}
+	if sdp == "" {
 		return Session{}, ErrInvalidInput
+	}
+	if len(sdp) > MaxSDPPChars {
+		return Session{}, ErrPayloadTooLarge
 	}
 	session, err := s.loadAuthorized(ctx, actorUserID, callID)
 	if err != nil {
@@ -285,15 +284,50 @@ func (s *Service) SetAnswer(ctx context.Context, actorUserID, callID uuid.UUID, 
 	if session.SDPAnswer != nil && *session.SDPAnswer != sdp {
 		return Session{}, ErrReplay
 	}
+	expected := session.Version
 	now := s.now().UTC()
 	session.SDPAnswer = &sdp
-	session.State = StateConnected
+	// Answer advances negotiation only — stay accepted unless already connected.
+	if session.State != StateConnected {
+		session.State = StateAccepted
+	}
 	session.UpdatedAt = now
-	updated, err := s.store.UpdateSession(ctx, session)
+	updated, err := s.store.UpdateSessionIfVersion(ctx, expected, session)
 	if err != nil {
 		return Session{}, err
 	}
 	s.notify(session.CallerUserID, "call.answer", updated.ID)
+	return updated, nil
+}
+
+// MarkConnected records a client-reported WebRTC connection indication.
+// The server does not verify media delivery.
+func (s *Service) MarkConnected(ctx context.Context, actorUserID, callID uuid.UUID) (Session, error) {
+	if err := s.allow(actorUserID); err != nil {
+		return Session{}, err
+	}
+	session, err := s.loadAuthorized(ctx, actorUserID, callID)
+	if err != nil {
+		return Session{}, err
+	}
+	if session.State == StateConnected {
+		return session, nil
+	}
+	if session.State != StateAccepted {
+		return Session{}, ErrIllegalTransition
+	}
+	if session.SDPOffer == nil || session.SDPAnswer == nil {
+		return Session{}, ErrIllegalTransition
+	}
+	expected := session.Version
+	now := s.now().UTC()
+	session.State = StateConnected
+	session.UpdatedAt = now
+	updated, err := s.store.UpdateSessionIfVersion(ctx, expected, session)
+	if err != nil {
+		return Session{}, err
+	}
+	s.notify(session.CallerUserID, "call.connected", updated.ID)
 	s.notify(session.CalleeUserID, "call.connected", updated.ID)
 	return updated, nil
 }
@@ -326,13 +360,6 @@ func (s *Service) AddICE(
 	if session.State != StateRinging && session.State != StateAccepted && session.State != StateConnected {
 		return ICECandidate{}, false, ErrIllegalTransition
 	}
-	n, err := s.store.CountICE(ctx, callID)
-	if err != nil {
-		return ICECandidate{}, false, err
-	}
-	if n >= MaxICEPerCall {
-		return ICECandidate{}, false, ErrPayloadTooLarge
-	}
 	ice := ICECandidate{
 		ID:            uuid.New(),
 		CallID:        callID,
@@ -343,7 +370,7 @@ func (s *Service) AddICE(
 		ClientICEID:   clientICEID,
 		CreatedAt:     s.now().UTC(),
 	}
-	stored, created, err := s.store.InsertICE(ctx, ice)
+	stored, created, err := s.store.InsertICEExclusive(ctx, ice)
 	if err != nil {
 		return ICECandidate{}, false, err
 	}
@@ -378,7 +405,6 @@ func (s *Service) ActiveForUser(ctx context.Context, userID uuid.UUID) (Session,
 	return s.store.FindActiveForUser(ctx, userID)
 }
 
-// EndCallsForUser ends all active calls for a user (logout / session revoke / device replacement).
 func (s *Service) EndCallsForUser(ctx context.Context, userID uuid.UUID) error {
 	for {
 		session, ok, err := s.store.FindActiveForUser(ctx, userID)
@@ -394,7 +420,6 @@ func (s *Service) EndCallsForUser(ctx context.Context, userID uuid.UUID) error {
 	}
 }
 
-// ExpireRinging marks overdue ringing calls as timed out.
 func (s *Service) ExpireRinging(ctx context.Context) (int, error) {
 	now := s.now().UTC()
 	expired, err := s.store.ListExpiredRinging(ctx, now, 100)
@@ -407,6 +432,9 @@ func (s *Service) ExpireRinging(ctx context.Context) (int, error) {
 			continue
 		}
 		if _, err := s.endCall(ctx, session, EndTimeout); err != nil {
+			if err == ErrStaleUpdate {
+				continue
+			}
 			return n, err
 		}
 		n++
@@ -421,7 +449,7 @@ func (s *Service) authorizePair(ctx context.Context, a, b uuid.UUID) error {
 			return err
 		}
 		if blocked {
-			return ErrBlocked
+			return ErrNotAvailable
 		}
 	}
 	ok, err := s.friends.AreAcceptedFriends(ctx, a, b)
@@ -429,7 +457,7 @@ func (s *Service) authorizePair(ctx context.Context, a, b uuid.UUID) error {
 		return err
 	}
 	if !ok {
-		return ErrNotFriends
+		return ErrNotAvailable
 	}
 	return nil
 }
@@ -464,20 +492,18 @@ func (s *Service) endCall(ctx context.Context, session Session, reason string) (
 	if session.State == StateEnded {
 		return session, nil
 	}
+	expected := session.Version
 	now := s.now().UTC()
 	session.State = StateEnded
 	session.EndReason = &reason
 	session.EndedAt = &now
 	session.UpdatedAt = now
-	// Clear media negotiation material immediately.
 	session.SDPOffer = nil
 	session.SDPAnswer = nil
-	updated, err := s.store.UpdateSession(ctx, session)
+	updated, err := s.store.EndSessionAtomic(ctx, expected, session)
 	if err != nil {
 		return Session{}, err
 	}
-	_ = s.store.ClearSignaling(ctx, session.ID)
-	_ = s.store.DeleteICEForCall(ctx, session.ID)
 	s.notify(session.CallerUserID, "call.ended", updated.ID)
 	s.notify(session.CalleeUserID, "call.ended", updated.ID)
 	return updated, nil

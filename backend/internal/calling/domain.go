@@ -8,23 +8,29 @@ import (
 )
 
 var (
-	ErrInvalidInput       = errors.New("invalid calling input")
-	ErrNotAuthorized      = errors.New("not authorized for call")
-	ErrNotFriends         = errors.New("not friends")
-	ErrBlocked            = errors.New("relationship blocked")
-	ErrCallMissing        = errors.New("call not found")
-	ErrIllegalTransition  = errors.New("illegal call state transition")
-	ErrBusy               = errors.New("participant busy")
-	ErrPayloadTooLarge    = errors.New("signaling payload too large")
-	ErrRateLimited        = errors.New("calling rate limited")
-	ErrReplay             = errors.New("replayed or forged signaling event")
-	ErrCallExpired        = errors.New("call ringing expired")
+	ErrInvalidInput      = errors.New("invalid calling input")
+	ErrNotAuthorized     = errors.New("not authorized for call")
+	ErrNotAvailable      = errors.New("call not available") // privacy: blocked OR nonfriend
+	ErrCallMissing       = errors.New("call not found")
+	ErrIllegalTransition = errors.New("illegal call state transition")
+	ErrBusy              = errors.New("participant busy")
+	ErrPayloadTooLarge   = errors.New("signaling payload too large")
+	ErrRateLimited       = errors.New("calling rate limited")
+	ErrReplay            = errors.New("replayed or forged signaling event")
+	ErrCallExpired       = errors.New("call ringing expired")
+	ErrDeviceConflict    = errors.New("call bound to another device")
+	ErrStaleUpdate       = errors.New("stale call state update")
+	ErrCleanupFailed     = errors.New("call signaling cleanup failed")
+
+	// Deprecated aliases kept for test migration clarity — map to ErrNotAvailable.
+	ErrNotFriends = ErrNotAvailable
+	ErrBlocked    = ErrNotAvailable
 )
 
 const (
 	StateRinging   = "ringing"
-	StateAccepted  = "accepted"
-	StateConnected = "connected"
+	StateAccepted  = "accepted"  // negotiation in progress (may have answer)
+	StateConnected = "connected" // client-reported ICE/WebRTC connected
 	StateEnded     = "ended"
 
 	MediaAudio = "audio"
@@ -63,6 +69,7 @@ type Session struct {
 	UpdatedAt      time.Time
 	AcceptedAt     *time.Time
 	EndedAt        *time.Time
+	Version        int64
 }
 
 func (s Session) Active() bool {

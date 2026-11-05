@@ -4,6 +4,7 @@ import '../../core/auth/auth_controller.dart';
 import '../../core/crypto/mls_session_manager.dart';
 import '../../core/network/api_client.dart';
 import '../../features/friends/models/friend.dart';
+import '../calling/call_controller.dart';
 import '../messaging/conversation_screen.dart';
 
 class ChatsScreen extends StatefulWidget {
@@ -12,11 +13,13 @@ class ChatsScreen extends StatefulWidget {
     this.apiClient,
     this.authController,
     this.mls,
+    this.callController,
   });
 
   final ApiClient? apiClient;
   final AuthController? authController;
   final MlsSessionManager? mls;
+  final CallController? callController;
 
   @override
   State<ChatsScreen> createState() => _ChatsScreenState();
@@ -149,6 +152,7 @@ class _ChatsScreenState extends State<ChatsScreen> {
                   mls: mls,
                   peerUserId: friend.userId,
                   peerEmail: friend.email,
+                  callController: widget.callController,
                 ),
               ),
             );

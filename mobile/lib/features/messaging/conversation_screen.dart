@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../../core/auth/auth_controller.dart';
 import '../../core/crypto/mls_session_manager.dart';
 import '../../core/network/api_client.dart';
+import '../calling/call_controller.dart';
+import '../calling/models/call_session.dart';
 import 'conversation_controller.dart';
 import 'models/envelope.dart';
 
@@ -14,6 +16,7 @@ class ConversationScreen extends StatefulWidget {
     required this.mls,
     required this.peerUserId,
     required this.peerEmail,
+    this.callController,
   });
 
   final ApiClient apiClient;
@@ -21,6 +24,7 @@ class ConversationScreen extends StatefulWidget {
   final MlsSessionManager mls;
   final String peerUserId;
   final String peerEmail;
+  final CallController? callController;
 
   @override
   State<ConversationScreen> createState() => _ConversationScreenState();
@@ -60,6 +64,24 @@ class _ConversationScreenState extends State<ConversationScreen> {
           appBar: AppBar(
             title: Text(widget.peerEmail),
             actions: [
+              if (widget.callController != null) ...[
+                IconButton(
+                  tooltip: 'Audio call',
+                  icon: const Icon(Icons.call),
+                  onPressed: () => widget.callController!.startOutgoing(
+                    peerUserId: widget.peerUserId,
+                    mediaType: CallMediaType.audio,
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Video call',
+                  icon: const Icon(Icons.videocam),
+                  onPressed: () => widget.callController!.startOutgoing(
+                    peerUserId: widget.peerUserId,
+                    mediaType: CallMediaType.video,
+                  ),
+                ),
+              ],
               if (_controller.offline)
                 const Padding(
                   padding: EdgeInsets.only(right: 12),

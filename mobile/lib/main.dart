@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
@@ -10,8 +12,13 @@ import 'core/network/api_client.dart';
 import 'core/network/api_config.dart';
 import 'core/theme/app_theme.dart';
 
+import 'features/calling/call_controller.dart';
+import 'features/calling/call_screens.dart';
+import 'features/calling/calling_api_client.dart';
+import 'features/calling/webrtc_call_service.dart';
 import 'features/chats/chats_screen.dart';
 import 'features/friends/friends_screen.dart';
+import 'features/messaging/realtime_client.dart';
 import 'features/settings/settings_screen.dart';
 import 'features/auth/auth_flow.dart';
 
@@ -77,7 +84,10 @@ class _PrivateMessengerAppState extends State<PrivateMessengerApp> {
             break;
 
           case AuthStatus.authenticated:
-            home = MainNavigation(
+            home = _AuthenticatedShell(
+              apiClient: _apiClient,
+              authController: _authController,
+              mls: _mls,
               onLogout: () async {
                 final userId = _authController.state.userId;
                 final deviceId = _authController.state.deviceId;
@@ -86,9 +96,6 @@ class _PrivateMessengerAppState extends State<PrivateMessengerApp> {
                 }
                 await _authController.signOut();
               },
-              apiClient: _apiClient,
-              authController: _authController,
-              mls: _mls,
             );
             break;
 
@@ -123,11 +130,84 @@ class _PrivateMessengerAppState extends State<PrivateMessengerApp> {
   }
 }
 
+class _AuthenticatedShell extends StatefulWidget {
+  const _AuthenticatedShell({
+    required this.apiClient,
+    required this.authController,
+    required this.mls,
+    required this.onLogout,
+  });
+
+  final ApiClient apiClient;
+  final AuthController authController;
+  final MlsSessionManager mls;
+  final Future<void> Function() onLogout;
+
+  @override
+  State<_AuthenticatedShell> createState() => _AuthenticatedShellState();
+}
+
+class _AuthenticatedShellState extends State<_AuthenticatedShell> {
+  late final CallController _calls;
+  late final RealtimeClient _realtime;
+  String _token = '';
+
+  @override
+  void initState() {
+    super.initState();
+    final base = ApiConfig.baseUri;
+    _realtime = RealtimeClient(
+      wsBaseUri: base.replace(scheme: base.scheme == 'https' ? 'wss' : 'ws'),
+    );
+    _calls = CallController(
+      api: CallingApiClient(client: http.Client(), baseUri: base),
+      media: WebRtcCallService(),
+      myUserId: widget.authController.state.userId ?? '',
+      tokenProvider: () => _token,
+      realtime: _realtime,
+    );
+    unawaited(_bootstrap());
+  }
+
+  Future<void> _bootstrap() async {
+    _token = await widget.authController.sessionToken() ?? '';
+    if (_token.isNotEmpty) {
+      await _realtime.start(_token);
+      await _calls.startListening();
+    }
+  }
+
+  @override
+  void dispose() {
+    _calls.dispose();
+    _realtime.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return CallHost(
+      controller: _calls,
+      child: MainNavigation(
+        onLogout: () async {
+          await _calls.onLogout();
+          await widget.onLogout();
+        },
+        apiClient: widget.apiClient,
+        authController: widget.authController,
+        mls: widget.mls,
+        callController: _calls,
+      ),
+    );
+  }
+}
+
 class MainNavigation extends StatefulWidget {
   final Future<void> Function()? onLogout;
   final ApiClient? apiClient;
   final AuthController? authController;
   final MlsSessionManager? mls;
+  final CallController? callController;
 
   const MainNavigation({
     super.key,
@@ -135,6 +215,7 @@ class MainNavigation extends StatefulWidget {
     this.apiClient,
     this.authController,
     this.mls,
+    this.callController,
   });
 
   @override
@@ -146,12 +227,12 @@ class _MainNavigationState extends State<MainNavigation> {
 
   @override
   Widget build(BuildContext context) {
-    // Create screens here so widget.onLogout is accessible.
     final screens = [
       ChatsScreen(
         apiClient: widget.apiClient,
         authController: widget.authController,
         mls: widget.mls,
+        callController: widget.callController,
       ),
       FriendsScreen(
         apiClient: widget.apiClient,

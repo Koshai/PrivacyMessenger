@@ -20,6 +20,7 @@ type CallingService interface {
 	HangUp(ctx context.Context, actorUserID, callID uuid.UUID) (calling.Session, error)
 	SetOffer(ctx context.Context, actorUserID, callID uuid.UUID, sdp string) (calling.Session, error)
 	SetAnswer(ctx context.Context, actorUserID, callID uuid.UUID, sdp string) (calling.Session, error)
+	MarkConnected(ctx context.Context, actorUserID, callID uuid.UUID) (calling.Session, error)
 	AddICE(ctx context.Context, actorUserID, callID uuid.UUID, candidate, clientICEID string, sdpMid *string, sdpMLineIndex *int) (calling.ICECandidate, bool, error)
 	Get(ctx context.Context, actorUserID, callID uuid.UUID) (calling.Session, error)
 	ListICE(ctx context.Context, actorUserID, callID uuid.UUID, afterSeq int64, limit int) ([]calling.ICECandidate, error)
@@ -108,6 +109,10 @@ func (h *CallingHandler) SetOffer(w http.ResponseWriter, r *http.Request) {
 
 func (h *CallingHandler) SetAnswer(w http.ResponseWriter, r *http.Request) {
 	h.setSDP(w, r, h.service.SetAnswer)
+}
+
+func (h *CallingHandler) MarkConnected(w http.ResponseWriter, r *http.Request) {
+	h.mutateCallNoDevice(w, r, h.service.MarkConnected)
 }
 
 func (h *CallingHandler) AddICE(w http.ResponseWriter, r *http.Request) {
@@ -299,6 +304,7 @@ func mapCall(s calling.Session) map[string]any {
 		"ring_expires_at":  s.RingExpiresAt.UTC(),
 		"created_at":       s.CreatedAt.UTC(),
 		"updated_at":       s.UpdatedAt.UTC(),
+		"version":          s.Version,
 	}
 	if s.CalleeDeviceID != nil {
 		out["callee_device_id"] = s.CalleeDeviceID.String()
@@ -346,16 +352,21 @@ func writeCallingError(w http.ResponseWriter, err error) {
 		http.Error(w, "invalid input", http.StatusBadRequest)
 	case errors.Is(err, calling.ErrNotAuthorized):
 		http.Error(w, "not authorized", http.StatusForbidden)
-	case errors.Is(err, calling.ErrNotFriends):
-		http.Error(w, "not friends", http.StatusForbidden)
-	case errors.Is(err, calling.ErrBlocked):
-		http.Error(w, "blocked", http.StatusForbidden)
+	case errors.Is(err, calling.ErrNotAvailable):
+		// Identical response for blocked and non-friend (privacy).
+		http.Error(w, "call not available", http.StatusNotFound)
 	case errors.Is(err, calling.ErrCallMissing):
 		http.Error(w, "call not found", http.StatusNotFound)
 	case errors.Is(err, calling.ErrIllegalTransition), errors.Is(err, calling.ErrCallExpired):
 		http.Error(w, "illegal call state", http.StatusConflict)
 	case errors.Is(err, calling.ErrBusy):
 		http.Error(w, "busy", http.StatusConflict)
+	case errors.Is(err, calling.ErrDeviceConflict):
+		http.Error(w, "device conflict", http.StatusConflict)
+	case errors.Is(err, calling.ErrStaleUpdate):
+		http.Error(w, "stale call state", http.StatusConflict)
+	case errors.Is(err, calling.ErrCleanupFailed):
+		http.Error(w, "cleanup failed", http.StatusInternalServerError)
 	case errors.Is(err, calling.ErrPayloadTooLarge):
 		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
 	case errors.Is(err, calling.ErrRateLimited):

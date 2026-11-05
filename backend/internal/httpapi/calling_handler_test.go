@@ -87,8 +87,8 @@ func TestCallingHTTPHappyPathAndAuthz(t *testing.T) {
 	req2.Header.Set("Content-Type", "application/json")
 	rec2 := httptest.NewRecorder()
 	r2.ServeHTTP(rec2, req2)
-	if rec2.Code != http.StatusForbidden {
-		t.Fatalf("nonfriend want 403 got %d", rec2.Code)
+	if rec2.Code != http.StatusNotFound {
+		t.Fatalf("nonfriend want privacy 404 got %d", rec2.Code)
 	}
 
 	// Accept as bob

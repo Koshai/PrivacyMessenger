@@ -4,18 +4,18 @@
 
 One-to-one audio/video calls. No groups, recording, livestreaming, or paid comms.
 
-## Selected client stack (verified for D2+)
+## Selected client stack (D2)
 
 | Item | Choice |
 | --- | --- |
-| Package | [`flutter_webrtc`](https://pub.dev/packages/flutter_webrtc) **1.6.3** |
-| License | **MIT** (compatible with proprietary PrivacyMessenger) |
-| Maintenance | Active (1.6.3 published 2026-10-26; Android/iOS/desktop/web) |
-| Native deps | Google WebRTC SDK via flutter-webrtc; platform permission plugins required in D2 |
+| Package | [`flutter_webrtc`](https://pub.dev/packages/flutter_webrtc) **1.6.3** (pinned) |
+| License | **MIT** — see `mobile/docs/licenses/flutter_webrtc-1.6.3-NOTICE.md` |
+| Maintenance | Active; Android/iOS/desktop/web |
+| Client layers | `CallingApiClient` → `CallController` → `CallService` (`WebRtcCallService` / `FakeCallService`) |
 
-D1 does **not** add the Flutter dependency yet — only documents the selection. D2 wires `CallService` + `flutter_webrtc`.
+Widgets never call WebRTC APIs directly.
 
-## Signaling model (D1)
+## Signaling model
 
 ```
 Flutter clients                Go API                     Peer
@@ -30,14 +30,15 @@ Flutter clients                Go API                     Peer
      |                           |<---- PUT .../answer ----|
      |<----- WS call.answer -----|                         |
      |-- POST .../ice ---------->|<------- POST .../ice ---|
+     |-- (ICE connected) ------->| POST .../connected      |
      |        WebRTC media (DTLS-SRTP) peer-to-peer / TURN |
 ```
 
 - **Authoritative state:** PostgreSQL `call_sessions` (+ ephemeral `call_ice_candidates`).
-- **Hints:** existing authenticated WebSocket hub (`realtime.Event.CallID`).
-- **Clients always re-fetch** `GET /calls/{id}` after a hint (same pattern as envelopes).
+- **Hints:** authenticated WebSocket hub (`realtime.Event.CallID`).
+- **Clients always re-fetch** `GET /calls/{id}` or `GET /calls/active` after a hint / reconnect.
 
-## Call state machine
+## Call state machine (D1.1)
 
 ```
 ringing → accepted → connected → ended
@@ -49,9 +50,9 @@ ringing → accepted → connected → ended
 | State | Meaning |
 | --- | --- |
 | `ringing` | Callee notified; awaiting accept/decline/cancel/timeout |
-| `accepted` | Callee accepted; SDP/ICE negotiation |
-| `connected` | Answer SDP stored; media expected on clients |
-| `ended` | Terminal; SDP/ICE cleared immediately |
+| `accepted` | Callee accepted; SDP/ICE negotiation in progress (answer may already be stored) |
+| `connected` | **Client-reported** WebRTC connection indication (`POST .../connected`). Not server-verified media delivery |
+| `ended` | Terminal; SDP/ICE cleared atomically with the end transition |
 
 End reasons: `declined`, `cancelled`, `hangup`, `timeout`, `revoked`, `busy`, `failed`.
 
@@ -62,33 +63,47 @@ End reasons: `declined`, `cancelled`, `hangup`, `timeout`, `revoked`, `busy`, `f
 | POST | `/calls` | Initiate (`media_type`, `callee_user_id`, `client_call_id`) |
 | GET | `/calls/active` | Current non-ended call |
 | GET | `/calls/{id}` | Fetch session |
-| POST | `/calls/{id}/accept` | Callee accept |
+| POST | `/calls/{id}/accept` | Callee accept (binds accepting device) |
 | POST | `/calls/{id}/decline` | Callee decline |
 | POST | `/calls/{id}/cancel` | Caller cancel while ringing |
 | POST | `/calls/{id}/hangup` | Either party end |
+| POST | `/calls/{id}/connected` | Client-reported media connected |
 | PUT | `/calls/{id}/offer` | Caller SDP offer |
-| PUT | `/calls/{id}/answer` | Callee SDP answer |
+| PUT | `/calls/{id}/answer` | Callee SDP answer (does **not** alone imply `connected`) |
 | POST | `/calls/{id}/ice` | Trickle ICE |
 | GET | `/calls/{id}/ice?after=` | Poll ICE |
 
-## Authorization
+## Authorization & concurrency (D1.1)
 
-- Accepted friendship required.
-- Either-direction `user_blocks` rejects initiate.
+- Accepted friendship required; blocks / non-friends → privacy-preserving not-available errors.
 - Only participants may read/mutate a call.
-- Single active call per user (busy otherwise).
+- Single active call per user (transactional / advisory-lock busy).
+- Accept binds callee device; conflicting device retries rejected.
+- Initiate idempotent retries validated against callee, caller device, media type.
+- Optimistic version checks on transitions.
 - Logout / session revoke ends active calls (`EndRevoked`).
+
+## Client media lifecycle (D2)
+
+1. User action → permission request → `prepareOutgoing` / `prepareIncoming` (getUserMedia).
+2. Create offer/answer; trickle ICE; poll peer ICE.
+3. On ICE connected/completed → local UI `connected` + `POST .../connected`.
+4. On hangup / fail / logout / reconcile-empty → dispose tracks, PC, renderers.
+
+Camera is never activated before initiation or acceptance. Video `getUserMedia` failure falls back to audio-only when possible.
 
 ## Retention
 
-SDP and ICE exist only while the call is non-terminal. On end they are deleted. Metadata (ids, media type, end reason, timestamps) may remain for missed-call UX.
+SDP and ICE exist only while the call is non-terminal. On end they are deleted atomically with the session transition. Metadata (ids, media type, end reason, timestamps) may remain for missed-call UX.
 
-## NAT / TURN (D3 — not implemented in D1)
+## NAT / TURN
 
-Short-lived TURN credentials via coturn; no permanent secrets in the app. Documented later in D3.
+- D2: injectable `IceServerConfig` with test STUN by default.
+- **D3 (not done):** short-lived TURN credentials; relay verification. Do not claim production NAT traversal yet.
 
 ## Module layout
 
-- `backend/internal/calling` — domain, service, stores
+- `backend/internal/calling` — domain, service, stores, Postgres integration tests
 - `backend/internal/httpapi/calling_*.go` — HTTP + WS notify adapter
-- Migration `000008_calling`
+- Migrations `000008_calling`, `000009` (D1.1)
+- `mobile/lib/features/calling/` — API, controller, WebRTC/fake services, screens
