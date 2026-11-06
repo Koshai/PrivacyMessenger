@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
+
 import '../../core/crypto/encryption_service.dart';
 import '../../core/crypto/mls_session_manager.dart';
 import '../../core/crypto/protocol_messages.dart';
@@ -9,6 +11,107 @@ import '../calling/call_auth.dart';
 import '../calling/call_auth_session.dart';
 import '../calling/call_binding_inbox.dart';
 import 'models/envelope.dart';
+
+/// Safe MLS failure record. Fields are stage names, exception types, content
+/// types, and sequence numbers. Exception messages and stack text are omitted
+/// because OpenMLS and user content can embed secrets.
+class MlsDiagnosticEvent {
+  final String stage;
+  final String exceptionType;
+  final String? contentType;
+  final int? conversationSeq;
+
+  const MlsDiagnosticEvent({
+    required this.stage,
+    required this.exceptionType,
+    this.contentType,
+    this.conversationSeq,
+  });
+
+  @override
+  String toString() =>
+      'MlsDiagnosticEvent(stage=$stage, type=$exceptionType, content=${contentType ?? ''}, seq=${conversationSeq ?? ''})';
+}
+
+class MlsSendFailure implements Exception {
+  final String stage;
+  final String exceptionType;
+  final StackTrace? stack;
+
+  MlsSendFailure(this.stage, this.exceptionType, [this.stack]);
+
+  @override
+  String toString() => 'MlsSendFailure($stage,$exceptionType)';
+}
+
+class _MlsIngestSignal implements Exception {
+  final String stage;
+  final Object cause;
+
+  _MlsIngestSignal(this.stage, this.cause);
+
+  @override
+  String toString() => 'MlsIngestSignal';
+}
+
+class MlsDiagnostics {
+  static const int _maxEvents = 40;
+  static final List<MlsDiagnosticEvent> events = [];
+
+  static void reset() => events.clear();
+
+  static String safeType(Object error) {
+    if (error is ApiException) {
+      final kind = error.kind.name;
+      final code = error.statusCode;
+      if (code == null) return 'ApiException.$kind';
+      return 'ApiException.$kind.$code';
+    }
+    if (error is MlsSendFailure) return 'MlsSendFailure';
+    final raw = error.runtimeType.toString();
+    if (RegExp(r'^[A-Za-z_][A-Za-z0-9_]{0,80}$').hasMatch(raw)) return raw;
+    return 'Exception';
+  }
+
+  static String _label(String value) {
+    if (RegExp(r'^[A-Za-z0-9_./+-]{1,80}$').hasMatch(value)) return value;
+    return 'redacted';
+  }
+
+  static void record({
+    required String stage,
+    required Object error,
+    String? contentType,
+    int? conversationSeq,
+    StackTrace? stack,
+    bool includeStack = false,
+  }) {
+    final event = MlsDiagnosticEvent(
+      stage: _label(stage),
+      exceptionType: safeType(error),
+      contentType: contentType == null ? null : _label(contentType),
+      conversationSeq: conversationSeq,
+    );
+    events.add(event);
+    if (events.length > _maxEvents) events.removeAt(0);
+    if (!kDebugMode) return;
+    debugPrint(event.toString());
+    if (includeStack && stack != null) debugStack(stack);
+  }
+
+  /// Prints Dart stack frames only. Lines that are not frames are dropped so
+  /// an exception message cannot ride along with the trace.
+  static void debugStack(StackTrace stack) {
+    if (!kDebugMode) return;
+    final frames = stack
+        .toString()
+        .split('\n')
+        .where((line) => line.trimLeft().startsWith('#'))
+        .take(12)
+        .join('\n');
+    if (frames.isNotEmpty) debugPrint(frames);
+  }
+}
 
 /// Orchestrates MLS session setup and opaque envelope exchange.
 ///
@@ -19,12 +122,19 @@ class EncryptedConversationService {
     required this.mls,
     this.inbox,
     this.engine,
+    this.submitTimeout = const Duration(seconds: 15),
   });
 
   final ApiClient api;
   final MlsSessionManager mls;
   final CallBindingInbox? inbox;
   final MlsGroupEncryptionService? engine;
+
+  /// Bounds only the envelope HTTP submit. MLS encryption is not cancelled
+  /// by this timer and is not repeated after it has produced ciphertext.
+  final Duration submitTimeout;
+
+  static const String processingWarning = 'A message could not be processed.';
 
   MlsGroupEncryptionService? get _crypto => engine ?? mls.service;
 
@@ -34,6 +144,7 @@ class EncryptedConversationService {
   final Set<String> _processedEnvelopeIds = {};
   final Set<String> _joinedViaWelcome = {};
   final Map<String, StoredCallBinding> _heldBindings = {};
+  final Map<String, List<int>> _preparedApplication = {};
   Future<void> _chain = Future<void>.value();
 
   String? keyChangeWarning;
@@ -143,17 +254,12 @@ class EncryptedConversationService {
     required String plaintext,
     required String clientMessageId,
   }) async {
-    final svc = mls.service;
+    final svc = _crypto;
     if (svc == null) throw StateError('MLS not ready');
     final groupId = _groupByConversation[conversationId];
     if (groupId == null) {
       throw StateError('MLS group not ready for conversation');
     }
-
-    final wire = await svc.encryptApplication(
-      groupIdHex: groupId,
-      plaintext: utf8.encode(plaintext),
-    );
 
     final pending = ChatMessageView(
       clientMessageId: clientMessageId,
@@ -164,19 +270,51 @@ class EncryptedConversationService {
       isMine: true,
     );
 
+    final prepared = _preparedApplication[clientMessageId];
+    final List<int> ciphertext;
+    if (prepared != null) {
+      ciphertext = prepared;
+    } else {
+      try {
+        final wire = await svc.encryptApplication(
+          groupIdHex: groupId,
+          plaintext: utf8.encode(plaintext),
+        );
+        ciphertext = List<int>.from(wire.bytes);
+        _preparedApplication[clientMessageId] = ciphertext;
+      } catch (error, stack) {
+        MlsDiagnostics.record(
+          stage: 'encrypt_application',
+          error: error,
+        );
+        throw MlsSendFailure(
+          'encrypt_application',
+          MlsDiagnostics.safeType(error),
+          stack,
+        );
+      }
+    }
+
     try {
-      final envelope = await api.sendEnvelope(
-        token: token,
-        conversationId: conversationId,
-        clientMessageId: clientMessageId,
-        ciphertext: wire.bytes,
-        contentType: MlsContentTypes.application,
-      );
+      final envelope = await api
+          .sendEnvelope(
+            token: token,
+            conversationId: conversationId,
+            clientMessageId: clientMessageId,
+            ciphertext: ciphertext,
+            contentType: MlsContentTypes.application,
+          )
+          .timeout(submitTimeout);
+      _preparedApplication.remove(clientMessageId);
       return pending.copyWith(
         delivery: ChatDeliveryState.sent,
         serverEnvelopeId: envelope.id,
       );
-    } catch (_) {
+    } catch (error) {
+      MlsDiagnostics.record(
+        stage: 'send_envelope',
+        error: error,
+      );
       return pending.copyWith(
         delivery: ChatDeliveryState.failed,
         error: 'Send failed',
@@ -224,13 +362,16 @@ class EncryptedConversationService {
       }
 
       if (env.contentType == MlsContentTypes.welcome) {
-        final groupId =
-            await svc.joinFromWelcome(welcomeBytes: env.ciphertext);
+        final String groupId;
+        try {
+          groupId = await svc.joinFromWelcome(welcomeBytes: env.ciphertext);
+        } catch (error) {
+          throw _MlsIngestSignal('welcome_join', error);
+        }
         _groupByConversation[env.conversationId] = groupId;
         _joinedViaWelcome.add(env.conversationId);
         // Ack only after successful cryptographic processing (C4).
-        await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
-        _processedEnvelopeIds.add(env.id);
+        await _acknowledge(token, env);
         return;
       }
 
@@ -247,36 +388,60 @@ class EncryptedConversationService {
             groupIdHex: groupId,
             messageBytes: env.ciphertext,
           );
-        } catch (_) {
+        } catch (error) {
           // Joiners often already advanced via Welcome; a redundant Commit for
           // the same epoch must not block recovery or cause silent discard of
-          // later application messages. Other crypto failures still surface.
-          if (!_joinedViaWelcome.contains(env.conversationId)) {
-            rethrow;
+          // later application messages. Other crypto failures still surface
+          // and are not acknowledged.
+          if (_joinedViaWelcome.contains(env.conversationId)) {
+            MlsDiagnostics.record(
+              stage: 'commit_process',
+              error: error,
+              contentType: env.contentType,
+              conversationSeq: env.conversationSeq,
+            );
+          } else {
+            throw _MlsIngestSignal('commit_process', error);
           }
         }
-        await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
-        _processedEnvelopeIds.add(env.id);
+        await _acknowledge(token, env);
         return;
       }
 
       if (env.contentType == MlsContentTypes.callKeyBinding) {
-        await _acceptCallBinding(token: token, svc: svc, env: env, groupId: groupId);
+        try {
+          await _acceptCallBinding(
+            token: token,
+            svc: svc,
+            env: env,
+            groupId: groupId,
+          );
+        } catch (error) {
+          if (error is _MlsIngestSignal) rethrow;
+          throw _MlsIngestSignal('call_binding', error);
+        }
         return;
       }
 
-      final decrypted = await svc.processIncoming(
-        groupIdHex: groupId,
-        messageBytes: env.ciphertext,
-      );
+      final DecryptedApplicationMessage? decrypted;
+      try {
+        decrypted = await svc.processIncoming(
+          groupIdHex: groupId,
+          messageBytes: env.ciphertext,
+        );
+      } catch (error) {
+        throw _MlsIngestSignal('application_decrypt', error);
+      }
 
       if (env.contentType == MlsContentTypes.application) {
         if (decrypted == null) {
           // Failed crypto must not silently ack/discard (C4).
-          throw StateError('application message produced no plaintext');
+          throw _MlsIngestSignal(
+            'application_decrypt',
+            StateError('no plaintext'),
+          );
         }
-        await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
-        _processedEnvelopeIds.add(env.id);
+        await _acknowledge(token, env);
         out.add(
           ChatMessageView(
             clientMessageId: env.clientMessageId,
@@ -291,32 +456,59 @@ class EncryptedConversationService {
         return;
       }
 
-      await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
-      _processedEnvelopeIds.add(env.id);
+      await _acknowledge(token, env);
+    }
+
+    Future<void> guarded(MessageEnvelope env) async {
+      try {
+        await processOne(env);
+      } catch (error) {
+        _noteIngestFailure(error, env);
+      }
     }
 
     for (final env in sorted) {
-      try {
-        await processOne(env);
-      } catch (_) {
-        keyChangeWarning =
-            'A message could not be decrypted. Verify your contact\'s safety number.';
-      }
+      await guarded(env);
     }
 
     // After Welcome, retry envelopes that arrived before local join.
     if (deferred.isNotEmpty) {
-      deferred.sort(compareEnvelopesForProcessing);
-      for (final env in deferred) {
-        try {
-          await processOne(env);
-        } catch (_) {
-          keyChangeWarning =
-              'A message could not be decrypted. Verify your contact\'s safety number.';
-        }
+      final pending = [...deferred]..sort(compareEnvelopesForProcessing);
+      deferred.clear();
+      for (final env in pending) {
+        await guarded(env);
       }
     }
     return out;
+  }
+
+  Future<void> _acknowledge(String token, MessageEnvelope env) async {
+    try {
+      await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
+    } catch (error) {
+      throw _MlsIngestSignal('acknowledge', error);
+    }
+    _processedEnvelopeIds.add(env.id);
+  }
+
+  void _noteIngestFailure(Object error, MessageEnvelope env) {
+    final stage = error is _MlsIngestSignal ? error.stage : 'ingest';
+    final cause = error is _MlsIngestSignal ? error.cause : error;
+    MlsDiagnostics.record(
+      stage: stage,
+      error: cause,
+      contentType: env.contentType,
+      conversationSeq: env.conversationSeq,
+    );
+    if (_isSafetyWarning(keyChangeWarning)) return;
+    keyChangeWarning = processingWarning;
+  }
+
+  bool _isSafetyWarning(String? value) {
+    return value ==
+            'Safety number changed for this contact. Verify before continuing.' ||
+        value ==
+            'Identity changed. Compare safety numbers before trusting this device.';
   }
 
   Future<void> _acceptCallBinding({
@@ -330,8 +522,7 @@ class EncryptedConversationService {
       throw StateError('Call binding inbox is not configured');
     }
     if (await box.contains(env.id)) {
-      await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
-      _processedEnvelopeIds.add(env.id);
+      await _acknowledge(token, env);
       return;
     }
     final held = _heldBindings.remove(env.id);
@@ -344,7 +535,10 @@ class EncryptedConversationService {
         messageBytes: env.ciphertext,
       );
       if (decrypted == null) {
-        throw StateError('call key binding produced no plaintext');
+        throw _MlsIngestSignal(
+          'call_binding',
+          StateError('no plaintext'),
+        );
       }
       record = _bindingRecord(env, decrypted.plaintext);
     }
@@ -354,8 +548,7 @@ class EncryptedConversationService {
       _heldBindings[env.id] = record;
       rethrow;
     }
-    await api.acknowledgeEnvelope(token: token, envelopeId: env.id);
-    _processedEnvelopeIds.add(env.id);
+    await _acknowledge(token, env);
   }
 
   StoredCallBinding _bindingRecord(MessageEnvelope env, List<int> plain) {

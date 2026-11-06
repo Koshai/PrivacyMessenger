@@ -229,6 +229,13 @@ class _MessageBubble extends StatelessWidget {
               children: [
                 Text(message.plaintext),
                 const SizedBox(height: 6),
+                if (message.error != null && message.error!.isNotEmpty) ...[
+                  Text(
+                    message.error!,
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                  const SizedBox(height: 6),
+                ],
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [

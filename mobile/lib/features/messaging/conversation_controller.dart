@@ -46,11 +46,17 @@ class ConversationController extends ChangeNotifier {
   bool offline = false;
   final List<ChatMessageView> messages = [];
   StreamSubscription? _rtSub;
+  bool _disposed = false;
+
+  void _notify() {
+    if (_disposed) return;
+    notifyListeners();
+  }
 
   Future<void> open() async {
     loadState = ConversationLoadState.loading;
     errorMessage = null;
-    notifyListeners();
+    _notify();
 
     try {
       await mls.ensureReady(auth);
@@ -92,7 +98,7 @@ class ConversationController extends ChangeNotifier {
       offline = true;
       errorMessage = 'Unable to open secure conversation';
     }
-    notifyListeners();
+    _notify();
   }
 
   Future<void> _syncNow() async {
@@ -109,69 +115,108 @@ class ConversationController extends ChangeNotifier {
       );
       if (added.isNotEmpty) {
         messages.addAll(added);
-        keyChangeWarning = _service.keyChangeWarning;
-        notifyListeners();
       }
+      final warning = _service.keyChangeWarning;
+      final warningChanged = warning != null && warning != keyChangeWarning;
+      if (warningChanged) keyChangeWarning = warning;
+      final wasOffline = offline;
       offline = false;
+      if (added.isNotEmpty || warningChanged || wasOffline) {
+        _notify();
+      }
     } catch (_) {
       offline = true;
-      notifyListeners();
+      _notify();
     }
   }
 
-  Future<void> send(String text) async {
+  Future<void> send(String text, {String? clientMessageId}) async {
+    if (_disposed) return;
     final token = await auth.sessionToken();
     final cid = conversationId;
     final userId = auth.state.userId;
-    if (token == null || cid == null || userId == null) return;
+    if (_disposed || token == null || cid == null || userId == null) return;
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
 
-    final clientId = 'c-${DateTime.now().microsecondsSinceEpoch}';
+    final clientId =
+        clientMessageId ?? 'c-${DateTime.now().microsecondsSinceEpoch}';
+    final prior = messages.indexWhere((m) => m.clientMessageId == clientId);
+    if (prior >= 0 && messages[prior].delivery == ChatDeliveryState.sent) {
+      return;
+    }
     final optimistic = ChatMessageView(
       clientMessageId: clientId,
       senderId: userId,
       plaintext: trimmed,
-      createdAt: DateTime.now().toUtc(),
+      createdAt:
+          prior >= 0 ? messages[prior].createdAt : DateTime.now().toUtc(),
       delivery: ChatDeliveryState.sending,
       isMine: true,
     );
-    messages.add(optimistic);
-    notifyListeners();
+    if (prior >= 0) {
+      messages[prior] = optimistic;
+    } else {
+      messages.add(optimistic);
+    }
+    _notify();
 
-    final result = await _service.sendText(
-      token: token,
-      conversationId: cid,
-      myUserId: userId,
-      plaintext: trimmed,
-      clientMessageId: clientId,
-    );
+    final ChatMessageView result;
+    try {
+      result = await _service.sendText(
+        token: token,
+        conversationId: cid,
+        myUserId: userId,
+        plaintext: trimmed,
+        clientMessageId: clientId,
+      );
+    } catch (error, stack) {
+      if (_disposed) return;
+      final trace = error is MlsSendFailure ? (error.stack ?? stack) : stack;
+      if (error is MlsSendFailure) {
+        MlsDiagnostics.debugStack(trace);
+      } else {
+        MlsDiagnostics.record(
+          stage: 'send',
+          error: error,
+          stack: trace,
+          includeStack: true,
+        );
+      }
+      final failed = optimistic.copyWith(
+        delivery: ChatDeliveryState.failed,
+        error: 'Message could not be sent.',
+      );
+      final idx = messages.indexWhere((m) => m.clientMessageId == clientId);
+      if (idx >= 0) messages[idx] = failed;
+      _notify();
+      return;
+    }
+    if (_disposed) return;
     final idx = messages.indexWhere((m) => m.clientMessageId == clientId);
     if (idx >= 0) {
       messages[idx] = result;
-      notifyListeners();
+      _notify();
     }
   }
 
   void dismissKeyChangeWarning() {
     keyChangeWarning = null;
-    notifyListeners();
+    _notify();
   }
 
   Future<void> retry(String clientMessageId) async {
-    final existing = messages.cast<ChatMessageView?>().firstWhere(
-          (m) => m!.clientMessageId == clientMessageId,
-          orElse: () => null,
-        );
-    if (existing == null || existing.delivery != ChatDeliveryState.failed) {
-      return;
-    }
-    messages.removeWhere((m) => m.clientMessageId == clientMessageId);
-    await send(existing.plaintext);
+    if (_disposed) return;
+    final idx = messages.indexWhere((m) => m.clientMessageId == clientMessageId);
+    if (idx < 0) return;
+    final existing = messages[idx];
+    if (existing.delivery != ChatDeliveryState.failed) return;
+    await send(existing.plaintext, clientMessageId: clientMessageId);
   }
 
   @override
   void dispose() {
+    _disposed = true;
     _rtSub?.cancel();
     _realtime.dispose();
     super.dispose();
