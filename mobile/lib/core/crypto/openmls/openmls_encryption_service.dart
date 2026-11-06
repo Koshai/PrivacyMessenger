@@ -272,6 +272,26 @@ class OpenMlsEncryptionService implements MlsGroupEncryptionService {
   }
 
   @override
+  Future<BigInt?> groupEpoch({required String groupIdHex}) async {
+    try {
+      return await _requireEngine.groupEpoch(
+        groupIdBytes: _fromHex(groupIdHex),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  BigInt? messageEpoch({required List<int> messageBytes}) {
+    try {
+      return mlsMessageExtractEpoch(messageBytes: messageBytes);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
   Future<List<int>> encrypt({
     required String recipientUserId,
     required List<int> plaintext,

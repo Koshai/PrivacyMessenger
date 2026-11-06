@@ -4,11 +4,56 @@ import 'package:flutter/foundation.dart';
 
 import '../../core/auth/auth_controller.dart';
 import '../../core/crypto/mls_session_manager.dart';
+import '../../core/crypto/protocol_messages.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/api_config.dart';
 import 'encrypted_conversation_service.dart';
 import 'models/envelope.dart';
 import 'realtime_client.dart';
+
+/// Chooses what [ConversationController.open] may hand to MLS.
+///
+/// Handshake envelopes are processed only while they are still pending.
+/// An acknowledged Welcome, Commit, or Proposal stays in history and is not
+/// replayed. Application envelopes in history are kept so they can be
+/// displayed, but an id that is also pending is returned once. [ingestEnvelopes]
+/// then sorts by conversation sequence, so an earlier epoch is applied before
+/// a later one.
+List<MessageEnvelope> selectEnvelopesForIngest({
+  required List<MessageEnvelope> history,
+  required List<MessageEnvelope> pending,
+}) {
+  final pendingIds = pending.map((envelope) => envelope.id).toSet();
+  final selected = <MessageEnvelope>[];
+  final seen = <String>{};
+
+  void consider(MessageEnvelope envelope) {
+    if (!seen.add(envelope.id)) return;
+    if (_isHandshake(envelope.contentType) && !pendingIds.contains(envelope.id)) {
+      return;
+    }
+    selected.add(envelope);
+  }
+
+  for (final envelope in history) {
+    consider(envelope);
+  }
+  for (final envelope in pending) {
+    consider(envelope);
+  }
+  return selected;
+}
+
+bool _isHandshake(String contentType) {
+  switch (contentType) {
+    case MlsContentTypes.welcome:
+    case MlsContentTypes.commit:
+    case MlsContentTypes.proposal:
+      return true;
+    default:
+      return false;
+  }
+}
 
 enum ConversationLoadState { idle, loading, ready, error }
 
@@ -72,7 +117,8 @@ class ConversationController extends ChangeNotifier {
       conversationId = info.conversationId;
       _service.bindConversationPeer(info.conversationId, peerUserId);
 
-      // Joiner path: ingest history/pending for Welcome.
+      // Pending envelopes drive handshake processing. History is display
+      // material and must not replay an acknowledged Welcome or Commit.
       final pending = await api.syncPending(token: token);
       final history = await api.listEnvelopes(
         token: token,
@@ -81,7 +127,7 @@ class ConversationController extends ChangeNotifier {
       final incoming = await _service.ingestEnvelopes(
         token: token,
         myUserId: auth.state.userId!,
-        envelopes: [...history.reversed, ...pending],
+        envelopes: selectEnvelopesForIngest(history: history, pending: pending),
       );
       messages
         ..clear()

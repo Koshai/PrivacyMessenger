@@ -55,6 +55,10 @@ class _ScriptedMls implements MlsGroupEncryptionService {
   bool returnNull;
   Future<void>? encryptGate;
   int encryptCalls = 0;
+  int joinCalls = 0;
+  int processCalls = 0;
+  BigInt? scriptedGroupEpoch;
+  BigInt? scriptedMessageEpoch;
 
   @override
   bool get isAvailable => true;
@@ -77,6 +81,7 @@ class _ScriptedMls implements MlsGroupEncryptionService {
 
   @override
   Future<String> joinFromWelcome({required List<int> welcomeBytes}) async {
+    joinCalls++;
     if (joinError != null) throw joinError!;
     return 'abc';
   }
@@ -86,10 +91,19 @@ class _ScriptedMls implements MlsGroupEncryptionService {
     required String groupIdHex,
     required List<int> messageBytes,
   }) async {
+    processCalls++;
     if (processError != null) throw processError!;
     if (returnNull) return null;
     return const DecryptedApplicationMessage(plaintext: [104, 105]);
   }
+
+  @override
+  Future<BigInt?> groupEpoch({required String groupIdHex}) async =>
+      scriptedGroupEpoch;
+
+  @override
+  BigInt? messageEpoch({required List<int> messageBytes}) =>
+      scriptedMessageEpoch;
 
   @override
   Future<void> ensureIdentityKeys() => throw UnimplementedError();
@@ -331,9 +345,44 @@ void main() {
     expect(logs.join('\n'), isNot(contains(_secret)));
   });
 
-  test('a joiner still acknowledges a redundant commit without a safety warning', () async {
+  test('a Commit for the current epoch is kept when processing fails', () async {
     final acks = <String>[];
-    final engine = _ScriptedMls();
+    final engine = _ScriptedMls()
+      ..scriptedGroupEpoch = BigInt.one
+      ..scriptedMessageEpoch = BigInt.one
+      ..processError = _SecretLeak();
+    final service = _service(engine, acks: acks);
+    service.bindConversationPeer(_conv, _peer);
+    service.rememberGroup(_conv, 'abc');
+    await service.ingestEnvelopes(
+      token: 'tok',
+      myUserId: _me,
+      envelopes: [_env('c', 2, MlsContentTypes.commit)],
+    );
+    expect(acks, isEmpty);
+    expect(engine.processCalls, 1);
+    expect(
+      service.keyChangeWarning,
+      EncryptedConversationService.processingWarning,
+    );
+    expect(_event('commit_process').exceptionType, '_SecretLeak');
+    expect(logs.join('\n'), isNot(contains(_secret)));
+
+    await service.ingestEnvelopes(
+      token: 'tok',
+      myUserId: _me,
+      envelopes: [_env('c', 2, MlsContentTypes.commit)],
+    );
+    expect(engine.processCalls, 1);
+    expect(acks, isEmpty);
+  });
+
+  test('a Commit from an older epoch is acknowledged without processing', () async {
+    final acks = <String>[];
+    final engine = _ScriptedMls()
+      ..scriptedGroupEpoch = BigInt.two
+      ..scriptedMessageEpoch = BigInt.one
+      ..processError = _SecretLeak();
     final service = _service(engine, acks: acks);
     service.bindConversationPeer(_conv, _peer);
     await service.ingestEnvelopes(
@@ -342,8 +391,6 @@ void main() {
       envelopes: [_env('w', 1, MlsContentTypes.welcome)],
     );
     expect(acks, ['w']);
-    expect(service.keyChangeWarning, isNull);
-
     engine.processError = _SecretLeak();
     await service.ingestEnvelopes(
       token: 'tok',
@@ -351,9 +398,73 @@ void main() {
       envelopes: [_env('c', 2, MlsContentTypes.commit)],
     );
     expect(acks, ['w', 'c']);
+    expect(engine.processCalls, 0);
     expect(service.keyChangeWarning, isNull);
-    expect(_event('commit_process').exceptionType, '_SecretLeak');
-    expect(logs.join('\n'), isNot(contains(_secret)));
+    expect(MlsDiagnostics.events, isEmpty);
+  });
+
+  test('the initiator skips its own Welcome and Commit', () async {
+    final acks = <String>[];
+    final engine = _ScriptedMls(joinError: _SecretLeak(), processError: _SecretLeak());
+    final service = _service(engine, acks: acks);
+    service.bindConversationPeer(_conv, _peer);
+    service.rememberGroup(_conv, 'abc');
+    await service.ingestEnvelopes(
+      token: 'tok',
+      myUserId: _me,
+      envelopes: [
+        _env('w', 1, MlsContentTypes.welcome, sender: _me),
+        _env('c', 2, MlsContentTypes.commit, sender: _me),
+      ],
+    );
+    expect(engine.joinCalls, 0);
+    expect(engine.processCalls, 0);
+    expect(acks, isEmpty);
+    expect(service.keyChangeWarning, isNull);
+    expect(MlsDiagnostics.events, isEmpty);
+  });
+
+  test('a pending Welcome is joined once', () async {
+    final acks = <String>[];
+    final engine = _ScriptedMls();
+    final service = _service(engine, acks: acks);
+    service.bindConversationPeer(_conv, _peer);
+    final welcome = _env('w', 1, MlsContentTypes.welcome);
+    await service.ingestEnvelopes(
+      token: 'tok',
+      myUserId: _me,
+      envelopes: [welcome, welcome],
+    );
+    await service.ingestEnvelopes(
+      token: 'tok',
+      myUserId: _me,
+      envelopes: [welcome],
+    );
+    expect(engine.joinCalls, 1);
+    expect(acks, ['w']);
+    expect(service.keyChangeWarning, isNull);
+  });
+
+  test('the sender can encrypt after the group exists', () async {
+    final engine = _ScriptedMls();
+    final harness = await _harness(engine: engine);
+    addTearDown(harness.dispose);
+    await harness.service.ingestEnvelopes(
+      token: 'tok',
+      myUserId: _me,
+      envelopes: [
+        _env('w', 1, MlsContentTypes.welcome, sender: _me),
+        _env('c', 2, MlsContentTypes.commit, sender: _me),
+      ],
+    );
+    expect(engine.joinCalls, 0);
+    expect(engine.processCalls, 0);
+
+    await harness.controller.send('hello');
+
+    expect(harness.controller.messages.single.delivery, ChatDeliveryState.sent);
+    expect(engine.encryptCalls, 1);
+    expect(harness.service.keyChangeWarning, isNull);
   });
 
   test('an existing safety-number warning is not replaced by a decrypt failure', () async {
@@ -391,9 +502,10 @@ Future<void> _until(bool Function() ready) async {
 }
 
 class _Harness {
-  _Harness(this.controller, this.auth, this._posts);
+  _Harness(this.controller, this.auth, this.service, this._posts);
   final ConversationController controller;
   final AuthController auth;
+  final EncryptedConversationService service;
   final int Function() _posts;
   int get posts => _posts();
   var _disposed = false;
@@ -457,7 +569,7 @@ Future<_Harness> _harness({
     ),
   );
   controller.conversationId = _conv;
-  return _Harness(controller, auth, () => posts);
+  return _Harness(controller, auth, service, () => posts);
 }
 
 EncryptedConversationService _service(
@@ -481,11 +593,11 @@ EncryptedConversationService _service(
   );
 }
 
-MessageEnvelope _env(String id, int seq, String type) {
+MessageEnvelope _env(String id, int seq, String type, {String? sender}) {
   return MessageEnvelope(
     id: id,
     conversationId: _conv,
-    senderId: _peer,
+    senderId: sender ?? _peer,
     clientMessageId: 'client-$id',
     ciphertext: const [1],
     contentType: type,

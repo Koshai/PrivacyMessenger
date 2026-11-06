@@ -59,6 +59,14 @@ abstract class MlsGroupEncryptionService implements EncryptionService {
     required List<int> messageBytes,
   });
 
+  /// Current epoch of [groupIdHex], or null when this backend cannot read it.
+  Future<BigInt?> groupEpoch({required String groupIdHex});
+
+  /// Epoch in which [messageBytes] was created, or null when it cannot be read.
+  ///
+  /// This is protocol metadata. Implementations must not surface the message.
+  BigInt? messageEpoch({required List<int> messageBytes});
+
   Future<void> persistAndClose();
 
   Future<void> restore();

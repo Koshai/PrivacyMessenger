@@ -142,9 +142,9 @@ class EncryptedConversationService {
   final Map<String, String> _knownFingerprints = {};
   final Map<String, String> _peerByConversation = {};
   final Set<String> _processedEnvelopeIds = {};
-  final Set<String> _joinedViaWelcome = {};
   final Map<String, StoredCallBinding> _heldBindings = {};
   final Map<String, List<int>> _preparedApplication = {};
+  final Set<String> _unresolvedEnvelopeIds = {};
   Future<void> _chain = Future<void>.value();
 
   String? keyChangeWarning;
@@ -348,15 +348,17 @@ class EncryptedConversationService {
 
     Future<void> processOne(MessageEnvelope env) async {
       if (_processedEnvelopeIds.contains(env.id)) return;
+      if (_unresolvedEnvelopeIds.contains(env.id)) return;
 
       if (!_isAuthorizedSender(env, myUserId)) {
         // Do not decrypt or display — membership/sender check failed.
         return;
       }
 
-      if (env.senderId == myUserId &&
-          (env.contentType == MlsContentTypes.application ||
-              env.contentType == MlsContentTypes.callKeyBinding)) {
+      if (env.senderId == myUserId && _isLocalCopy(env.contentType)) {
+        // Our own handshake was merged before it was uploaded. Do not join
+        // it, do not process it, and do not acknowledge it: delivery rows
+        // belong to the peer.
         _processedEnvelopeIds.add(env.id);
         return;
       }
@@ -369,7 +371,6 @@ class EncryptedConversationService {
           throw _MlsIngestSignal('welcome_join', error);
         }
         _groupByConversation[env.conversationId] = groupId;
-        _joinedViaWelcome.add(env.conversationId);
         // Ack only after successful cryptographic processing (C4).
         await _acknowledge(token, env);
         return;
@@ -383,26 +384,22 @@ class EncryptedConversationService {
 
       if (env.contentType == MlsContentTypes.commit ||
           env.contentType == MlsContentTypes.proposal) {
+        // A Commit is created in epoch N and moves members to N+1. Welcome
+        // already installs N+1, so that Commit's epoch is strictly older.
+        // Epoch metadata is the only redundancy signal used here. A failure
+        // we cannot classify stays unacknowledged for a later attempt.
+        if (env.contentType == MlsContentTypes.commit &&
+            await _commitEpochAlreadyPassed(svc, groupId, env)) {
+          await _acknowledge(token, env);
+          return;
+        }
         try {
           await svc.processIncoming(
             groupIdHex: groupId,
             messageBytes: env.ciphertext,
           );
         } catch (error) {
-          // Joiners often already advanced via Welcome; a redundant Commit for
-          // the same epoch must not block recovery or cause silent discard of
-          // later application messages. Other crypto failures still surface
-          // and are not acknowledged.
-          if (_joinedViaWelcome.contains(env.conversationId)) {
-            MlsDiagnostics.record(
-              stage: 'commit_process',
-              error: error,
-              contentType: env.contentType,
-              conversationSeq: env.conversationSeq,
-            );
-          } else {
-            throw _MlsIngestSignal('commit_process', error);
-          }
+          throw _MlsIngestSignal('commit_process', error);
         }
         await _acknowledge(token, env);
         return;
@@ -491,6 +488,35 @@ class EncryptedConversationService {
     _processedEnvelopeIds.add(env.id);
   }
 
+  /// True when [env] is a Commit created in an epoch this group has left.
+  ///
+  /// Returns false when either epoch cannot be read. Callers must not treat
+  /// that as redundancy and must not match exception text.
+  Future<bool> _commitEpochAlreadyPassed(
+    MlsGroupEncryptionService svc,
+    String groupId,
+    MessageEnvelope env,
+  ) async {
+    final sentIn = svc.messageEpoch(messageBytes: env.ciphertext);
+    if (sentIn == null) return false;
+    final current = await svc.groupEpoch(groupIdHex: groupId);
+    if (current == null) return false;
+    return sentIn < current;
+  }
+
+  bool _isLocalCopy(String contentType) {
+    switch (contentType) {
+      case MlsContentTypes.application:
+      case MlsContentTypes.callKeyBinding:
+      case MlsContentTypes.welcome:
+      case MlsContentTypes.commit:
+      case MlsContentTypes.proposal:
+        return true;
+      default:
+        return false;
+    }
+  }
+
   void _noteIngestFailure(Object error, MessageEnvelope env) {
     final stage = error is _MlsIngestSignal ? error.stage : 'ingest';
     final cause = error is _MlsIngestSignal ? error.cause : error;
@@ -500,6 +526,11 @@ class EncryptedConversationService {
       contentType: env.contentType,
       conversationSeq: env.conversationSeq,
     );
+    // Keep the server delivery. Remember the id so a realtime sync cannot
+    // spin on the same failure; a new process can try again.
+    if (stage != 'acknowledge') {
+      _unresolvedEnvelopeIds.add(env.id);
+    }
     if (_isSafetyWarning(keyChangeWarning)) return;
     keyChangeWarning = processingWarning;
   }
