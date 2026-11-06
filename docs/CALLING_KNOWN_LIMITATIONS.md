@@ -20,7 +20,7 @@ The call-binding inbox selects the newest usable record for a sender account and
 
 Direct and relay media still depend on WebRTC DTLS-SRTP. The app does not add a second media encryption layer.
 
-The CI relay test uses coturn on loopback. The hosted validation Compose file prepares a public coturn listener, and that external relay has not been executed. DNS, firewall rules, cross-network clients, and VPS capacity are unverified. Relay metadata remains visible to the TURN operator. TURN over TLS is not enabled in the validation config.
+The CI relay test uses coturn on loopback. The hosted validation stack intentionally relays over UDP only: TCP relay and TURN TLS are not part of this validation acceptance. That external UDP relay has not been executed. DNS, firewall rules, cross-network clients, and VPS capacity are unverified. Relay metadata remains visible to the TURN operator.
 
 ## Platforms
 

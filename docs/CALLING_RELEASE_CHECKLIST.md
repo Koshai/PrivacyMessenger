@@ -18,6 +18,7 @@ A row is passed only when that check ran and succeeded. Skipped and not-run rows
 | Android notification, foreground service, permission denial, system hang-up, background, lock, audio focus, speaker/Bluetooth, process cleanup | Not run | Open blocker |
 | Physical Android | Not attached | Open blocker |
 | iPhone CallKit, audio session, hang-up, permissions, background, lock, routing, media cleanup | Not run | Open blocker |
+| Validation TURN transport | Intentional UDP relay only. TCP relay and TURN TLS are outside this validation stack. External UDP relay is still not run | `no-tcp-relay` and UDP-only `TURN_URLS` in the validation config |
 | Production TURN on an external host | Not run | Open blocker |
 | Hosted API, PostgreSQL, HTTPS, and SMTP on OVHcloud | Files prepared. Not provisioned and not exercised | `docs/HOSTED_VALIDATION_RESULTS.md` |
 | VPS-1 capacity under the validation workload | Not measured | `docs/HOSTED_RESOURCE_BUDGET.md` |

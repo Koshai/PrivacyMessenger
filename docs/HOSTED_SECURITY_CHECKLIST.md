@@ -49,9 +49,9 @@ Do not log message plaintext, MLS secrets, private identity keys, OTP values, se
 
 ## Data
 
-- [ ] `pg_dump` custom format taken.
-- [ ] Dump encrypted and copied off the server.
-- [ ] Restore into an isolated database name succeeded on this host.
+- [ ] `backup.sh` produced an encrypted copy on a different machine. The VPS does not still hold the plaintext or the only ciphertext.
+- [ ] Off-server retention is 14 daily copies and the newest copy in each week for 8 weeks.
+- [ ] An isolated restore from that ciphertext succeeded on this host within the last 30 days.
 - [ ] Roles `pm_admin` and `pm_app` are recorded in the secrets store because the dump uses `--no-owner`.
 - [ ] Volume `postgres_data` is excluded from any prune command.
 

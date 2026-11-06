@@ -4,7 +4,9 @@ External TURN has not been validated. A coturn process that starts, including th
 
 ## What is prepared
 
-`deploy/compose.validation.yml` publishes UDP and TCP 3478 and UDP 49160-49260. TLS port 5349 is not published. `no-tcp-relay` is set. `TURN_URLS` in the example advertises UDP only.
+UDP-only relay is intentional for this validation stack. `no-tcp-relay` refuses TCP relay allocations, `TURN_URLS` advertises `turn:<host>:3478?transport=udp` only, and port 5349 is not published. TCP 3478 stays published so a client can reach the server, and that listener still does not allocate a TCP relay. TURN over TLS needs a certificate and a later checklist change. External proof of the UDP relay remains open.
+
+`deploy/compose.validation.yml` publishes UDP and TCP 3478 and UDP 49160-49260.
 
 The shared secret is the API `TURN_SHARED_SECRET`. The entrypoint rejects an empty secret and writes the rendered config inside the container with mode 0600. The Flutter build does not receive it.
 

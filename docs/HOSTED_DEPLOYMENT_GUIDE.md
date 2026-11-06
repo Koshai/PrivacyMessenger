@@ -65,23 +65,37 @@ PostgreSQL has no host port. The API has no host port. coturn is not attached to
 
 The migrate service is one-shot. It records applied filenames in `schema_migrations`. It does not run `*.down.sql` and it does not truncate application tables. Re-running it skips files that are already recorded. `psql` cannot parse pgx's `pool_max_conns`, so the migrate script removes `pool_*` parameters from the URL before it connects. The API process keeps those parameters.
 
-Each file runs in one transaction. If a file fails, earlier statements in that file roll back and the filename is not recorded. Files that already committed stay applied.
+Each file and its ledger insert run in one transaction. If the file fails, or if `psql` is interrupted, PostgreSQL rolls the file and the ledger row back together. The next run applies that filename again. Files that already committed stay applied.
 
 There is no development seed on this stack.
 
 ## Backups
 
-From `deploy/`, with `.env` present:
+Set `BACKUP_PASSPHRASE` (16 or more characters) and `BACKUP_OFFSITE_TARGET=user@backup-host:/var/backups/privacymessenger` in `deploy/.env`. From `deploy/`:
 
 ```sh
 sh scripts/backup.sh
 ```
 
-The dump does not include roles. A restore needs `pm_admin` and `pm_app` recreated from the secrets store, then `sh scripts/restore-isolated.sh ./backups/<file>.dump`. The script refuses the name `private_messenger`.
+The script dumps in custom format, encrypts with AES-256-CBC and PBKDF2 (200000 iterations), copies the ciphertext to the off-server target, and deletes the plaintext and the local ciphertext. A path without `user@host:` is refused. `BACKUP_ALLOW_LOCAL_DRILL=1` exists only for the local regression and does not satisfy this procedure.
 
-Encrypt the dump and copy it off the VPS before deleting the local file. A backup that exists only on this disk is not a backup.
+The dump does not include roles. Recreate `pm_admin` and `pm_app` from the secrets store, then:
 
-Test that isolated restore on the VPS after the first real dump. A local Docker drill, if recorded in `docs/HOSTED_VALIDATION_RESULTS.md`, is not that VPS test.
+```sh
+sh scripts/restore-isolated.sh /path/to/private_messenger_<stamp>.dump.enc private_messenger_restore
+```
+
+The script refuses the name `private_messenger`. Decrypt uses `BACKUP_PASSPHRASE` and removes the temporary plaintext when it exits.
+
+Retention, applied on the off-server directory:
+
+```sh
+sh scripts/backup.sh prune /var/backups/privacymessenger
+```
+
+Keep every encrypted copy from the last 14 days. For copies older than 14 days and up to 56 days, keep the newest copy in each ISO week. Delete everything older than 56 days. Run the prune after each successful copy. The VPS does not keep a backup after the copy succeeds.
+
+Take a backup at least once a day. Test an isolated restore from the off-server ciphertext after the first real backup and again at least once every 30 days. A local drill recorded in `docs/HOSTED_VALIDATION_RESULTS.md` is not that VPS test.
 
 ## Rollback
 

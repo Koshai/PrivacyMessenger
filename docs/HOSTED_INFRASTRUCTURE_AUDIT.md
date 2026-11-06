@@ -82,7 +82,7 @@ Localhost assumptions: the default bind is loopback. The validation compose sets
 | Seed data | `backend/cmd/e2eseed` is a test tool. The validation compose does not run it |
 | Retention | No server-side message wipe job was found. OTP and session rows follow the existing auth tables |
 
-The validation migrate container applies `*.up.sql` in order inside a transaction per file and records the filename in `schema_migrations`. A failed file leaves a non-zero container status. Down migrations are not applied.
+The validation migrate container applies `*.up.sql` in order. The file and its `schema_migrations` insert commit in one transaction. A failed or interrupted file leaves a non-zero container status and rolls both back. Down migrations are not applied.
 
 ## A3. Flutter
 

@@ -40,6 +40,22 @@ These ran on the developer workstation. They do not exercise OVHcloud, DNS, SMTP
 | Android debug build | Pass | `flutter build apk --debug` with `APP_ENV=validation` and `API_BASE_URL=https://api.example.com`. Gradle warned that `flutter_webrtc` still applies the Kotlin Gradle Plugin. The APK was produced |
 | iOS compile | Not run here | This workstation has no Xcode. GitHub Actions `ios-compile` is the check |
 
+## Follow-up checks
+
+Re-run on the developer workstation after the migration and backup changes. Still not a VPS result.
+
+| Command | Result | Notes |
+| --- | --- | --- |
+| `go test ./... -count=1` | Pass | Every package `ok` |
+| `go test ./internal/turn -count=1 -v` | Pass, one skip | `TestRelayOnlyDataChannel` skipped because `TURN_RELAY_TEST` is unset |
+| `flutter analyze` | Pass | No issues |
+| `flutter test` with `LIVE_E2E=1` | Pass | 155 passed, 0 failed |
+| `deploy/scripts/migrate_regression.sh` | Pass | A failing file rolled back its table and wrote no ledger row. Terminating `psql` during `pg_sleep` did the same. The following run applied that filename |
+| `deploy/scripts/backup_regression.sh` | Pass | AES-256-CBC ciphertext restored marker id 7 into `backup_dst`. Retention kept the 14-day file and the newer weekly file, and deleted the older weekly file and the 90-day file. A local target without `BACKUP_ALLOW_LOCAL_DRILL=1` was refused |
+| `docker compose config` | Pass | Validation compose still parses |
+
+UDP-only TURN relay is an intentional validation choice. External UDP relay, TCP relay, and TURN TLS were not run.
+
 ## Security notes for this preparation
 
 - No production password, SMTP password, OTP secret, or TURN secret is in the commit.

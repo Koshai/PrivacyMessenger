@@ -32,9 +32,12 @@ for file in $(find "$dir" -maxdepth 1 -type f -name '*.up.sql' | sort); do
     continue
   fi
   echo "apply ${name}"
-  psql "$psql_url" -v ON_ERROR_STOP=1 --single-transaction -f "$file"
-  psql "$psql_url" -v ON_ERROR_STOP=1 \
-    -c "INSERT INTO schema_migrations (filename) VALUES ('${name}')"
+  # The ledger row commits with the file. An interrupted psql rolls both back.
+  psql "$psql_url" -v ON_ERROR_STOP=1 --single-transaction \
+    -v "migration_filename=${name}" <<EOF
+\\i ${file}
+INSERT INTO schema_migrations (filename) VALUES (:'migration_filename');
+EOF
 done
 
 echo "migrations complete"
