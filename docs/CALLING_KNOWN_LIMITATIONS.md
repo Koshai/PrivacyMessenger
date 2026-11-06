@@ -10,15 +10,17 @@ Locked-screen incoming-call behavior has not been demonstrated.
 
 ## Identity and bindings
 
-Contact pins are keyed by device id and are kept across logout. Logout deletes this device's call-signing seed and the call-binding inbox. A crash in the moment after OpenMLS consumes a binding and before the inbox write loses that binding; the call then fails closed. The inbox keeps at most eight bindings for three minutes.
+Contact pins are keyed by device id and are kept across logout. Logout deletes this device's call-signing seed and the call-binding inbox. A crash in the moment after OpenMLS consumes a binding and before the inbox write loses that binding; the call then fails closed. The inbox keeps at most eight bindings for three minutes. That crash window was not changed during hosted-deployment preparation.
 
 Enrollment presence still comes from the server's device list. The signature, the pinned fingerprint, and the DTLS fingerprint are checked on the device. A timeout or a failed enrollment request does not by itself end a call that already authenticated. A `false` enrollment result does.
+
+The call-binding inbox selects the newest usable record for a sender account and device. It does not also match a call id. A newer binding from the same device can therefore be the one offered to a different call, and that call fails closed when the statement does not match. This lookup was not changed during hosted-deployment preparation.
 
 ## Media and TURN
 
 Direct and relay media still depend on WebRTC DTLS-SRTP. The app does not add a second media encryption layer.
 
-The CI relay test uses coturn on loopback. A public TURN deployment, with DNS, TLS, firewall rules, cross-network clients, and operational monitoring, has not been verified. Relay metadata remains visible to the TURN operator.
+The CI relay test uses coturn on loopback. The hosted validation Compose file prepares a public coturn listener, and that external relay has not been executed. DNS, firewall rules, cross-network clients, and VPS capacity are unverified. Relay metadata remains visible to the TURN operator. TURN over TLS is not enabled in the validation config.
 
 ## Platforms
 

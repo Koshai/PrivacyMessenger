@@ -1,0 +1,24 @@
+# Prebuilt API image for the hosted validation VPS.
+# Build context is backend/. The VPS runs this image and does not compile the app.
+
+FROM golang:1.26.10-bookworm AS build
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates wget \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 65532 --no-create-home --shell /usr/sbin/nologin pm
+
+COPY --from=build /out/api /usr/local/bin/api
+
+USER pm
+EXPOSE 4000
+ENTRYPOINT ["/usr/local/bin/api"]

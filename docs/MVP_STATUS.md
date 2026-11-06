@@ -2,7 +2,7 @@
 
 **Updated:** 2026-11-05  
 **Repository:** https://github.com/Koshai/PrivacyMessenger  
-**D7:** acceptance review is ready for review. Milestone D stays **open**. Milestone E has not started.
+**D7:** acceptance review is ready for review. Hosted validation files are prepared and have not been deployed. Milestone D stays **open**. Milestone E has not started.
 
 ## Milestone progress
 
@@ -22,4 +22,4 @@ Reports: `docs/CALLING_D7_REPORT.md`, `docs/CALLING_RELEASE_CHECKLIST.md`, `docs
 
 ## Next
 
-Review D7. Do not start Milestone E and do not mark Milestone D complete until the open blockers in the checklist are accepted or closed.
+Review the hosted deployment commit before any OVHcloud or DNS change. Do not start Milestone E and do not mark Milestone D complete until the open blockers in the checklist are accepted or closed.

@@ -5,6 +5,8 @@ PrivacyMessenger uses **coturn** with time-limited REST credentials (`use-auth-s
 Example process config: `deploy/coturn/turnserver.conf`.  
 Example compose (local ports, non-production secret default): `deploy/coturn/docker-compose.yml`.
 
+Hosted validation on one VPS is a separate stack: `deploy/compose.validation.yml` and `deploy/coturn/turnserver.validation.conf`. That stack uses relay UDP `49160–49260`, injects the shared secret at start, and does not enable TURN over TLS. Starting that container is not evidence of an external relay. See `docs/PRODUCTION_TURN_VALIDATION.md`.
+
 ## DNS and TLS
 
 - Publish a stable name such as `turn.example.test` that resolves to the coturn host.
@@ -21,7 +23,7 @@ Example compose (local ports, non-production secret default): `deploy/coturn/doc
 | 5349/tcp | TURN over TLS when certificates are installed |
 | 49160–49200/udp (example) | Relay media. Size the range for peak concurrent calls |
 
-`min-port` / `max-port` in coturn must match the firewall allowance. Clients receive these allocations as relay candidates; the range must be reachable from the Internet, not only from the API host.
+`min-port` / `max-port` in coturn must match the firewall allowance. Clients receive these allocations as relay candidates; the range must be reachable from the Internet, not only from the API host. The hosted validation stack uses `49160–49260`. The local example remains `49160–49200`.
 
 ## Firewall and NAT
 

@@ -1,0 +1,31 @@
+{
+	email {$ACME_EMAIL}
+	servers {
+		timeouts {
+			read_body 30s
+			read_header 10s
+			write 60s
+			idle 120s
+		}
+	}
+}
+
+{$API_DOMAIN} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		-Server
+	}
+	request_body {
+		max_size 1MB
+	}
+	reverse_proxy api:4000 {
+		transport http {
+			read_timeout 60s
+			write_timeout 60s
+		}
+	}
+}

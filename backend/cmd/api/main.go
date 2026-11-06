@@ -71,8 +71,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Local development only. No actual emails are sent.
-	// Replace with a production sender before deployment.
+	// Sends OTP mail over SMTP with STARTTLS. Credentials come from the environment.
 
 	smtpPort, err := strconv.Atoi(os.Getenv("SMTP_PORT"))
 	if err != nil {

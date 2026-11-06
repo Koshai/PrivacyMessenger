@@ -172,7 +172,10 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
     );
     final base = ApiConfig.baseUri;
     _realtime = RealtimeClient(
-      wsBaseUri: base.replace(scheme: base.scheme == 'https' ? 'wss' : 'ws'),
+      wsBaseUri: base.replace(
+        scheme: base.scheme == 'https' ? 'wss' : 'ws',
+        path: '/realtime/ws',
+      ),
     );
     final callingApi = CallingApiClient(client: http.Client(), baseUri: base);
     const relayOnly = bool.fromEnvironment('CALL_RELAY_ONLY');

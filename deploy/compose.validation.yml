@@ -1,0 +1,155 @@
+# Single-server validation stack. TLS ends at Caddy. PostgreSQL has no published port.
+# The API listens on the Docker networks only. Do not set APP_ENV=production here:
+# that mode requires certificate files inside the API process.
+
+name: privacymessenger-validation
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:17.6
+    restart: unless-stopped
+    shm_size: 512mb
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/postgres-init.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=30
+    networks:
+      - data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    stop_grace_period: 30s
+    mem_limit: 1g
+    logging: *logging
+
+  migrate:
+    image: postgres:17.6
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${VALIDATION_DATABASE_URL:?Set VALIDATION_DATABASE_URL}
+    volumes:
+      - ../backend/migrations:/migrations:ro
+      - ./scripts/migrate.sh:/migrate.sh:ro
+    entrypoint: ["/bin/sh", "/migrate.sh"]
+    networks:
+      - data
+
+  api:
+    build:
+      context: ../backend
+      dockerfile: ../deploy/Dockerfile.api
+    image: privacymessenger-api:validation
+    restart: unless-stopped
+    environment:
+      APP_ENV: validation
+      APP_HOST: 0.0.0.0
+      APP_PORT: "4000"
+      DATABASE_URL: ${VALIDATION_DATABASE_URL:?Set VALIDATION_DATABASE_URL}
+      OTP_HMAC_SECRET: ${OTP_HMAC_SECRET:?Set OTP_HMAC_SECRET}
+      SMTP_HOST: ${SMTP_HOST:?Set SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:?Set SMTP_PORT}
+      SMTP_USERNAME: ${SMTP_USERNAME:?Set SMTP_USERNAME}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:?Set SMTP_PASSWORD}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:?Set SMTP_FROM_EMAIL}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:?Set SMTP_FROM_NAME}
+      TURN_SHARED_SECRET: ${TURN_SHARED_SECRET:?Set TURN_SHARED_SECRET}
+      TURN_URLS: ${TURN_URLS:?Set TURN_URLS}
+      TURN_STUN_URLS: ${TURN_STUN_URLS:-}
+      TURN_TTL_SECONDS: ${TURN_TTL_SECONDS:-600}
+      TURN_REALM: ${TURN_REALM:?Set TURN_REALM}
+      WS_ALLOWED_ORIGINS: ${WS_ALLOWED_ORIGINS:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # edge is first so the default route can reach SMTP. data is the private database network.
+    networks:
+      - edge
+      - data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    stop_grace_period: 15s
+    mem_limit: 512m
+    logging: *logging
+
+  caddy:
+    image: caddy:2.8.4
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?Set API_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - edge
+    mem_limit: 128m
+    logging: *logging
+
+  coturn:
+    image: coturn/coturn:4.6.3
+    restart: unless-stopped
+    environment:
+      TURN_SHARED_SECRET: ${TURN_SHARED_SECRET}
+      TURN_REALM: ${TURN_REALM}
+      TURN_EXTERNAL_IP: ${TURN_EXTERNAL_IP:?Set TURN_EXTERNAL_IP}
+    volumes:
+      - ./coturn/turnserver.validation.conf:/etc/coturn/turnserver.conf.template:ro
+      - ./coturn/entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "49160-49260:49160-49260/udp"
+    mem_limit: 256m
+    logging: *logging
+
+networks:
+  data:
+    internal: true
+  edge:
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

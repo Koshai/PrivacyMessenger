@@ -19,6 +19,8 @@ A row is passed only when that check ran and succeeded. Skipped and not-run rows
 | Physical Android | Not attached | Open blocker |
 | iPhone CallKit, audio session, hang-up, permissions, background, lock, routing, media cleanup | Not run | Open blocker |
 | Production TURN on an external host | Not run | Open blocker |
+| Hosted API, PostgreSQL, HTTPS, and SMTP on OVHcloud | Files prepared. Not provisioned and not exercised | `docs/HOSTED_VALIDATION_RESULTS.md` |
+| VPS-1 capacity under the validation workload | Not measured | `docs/HOSTED_RESOURCE_BUDGET.md` |
 | Terminated-app incoming calls | Unsupported, accepted as an MVP constraint | `docs/CALLING_KNOWN_LIMITATIONS.md` |
 
 Milestone D stays open while any open blocker remains. CI success does not close it.
