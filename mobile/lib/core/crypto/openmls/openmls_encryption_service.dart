@@ -248,6 +248,25 @@ class OpenMlsEncryptionService implements MlsGroupEncryptionService {
   }
 
   @override
+  Future<DecryptedApplicationMessage> inspectApplication({
+    required String groupIdHex,
+    required List<int> messageBytes,
+  }) async {
+    final inspected = await _requireEngine.inspectMessage(
+      groupIdBytes: _fromHex(groupIdHex),
+      messageBytes: Uint8List.fromList(messageBytes),
+    );
+    if (inspected.messageType != ProcessedMessageType.application) {
+      throw StateError('Inspected message is not an application message');
+    }
+    final app = inspected.applicationMessage;
+    if (app == null) {
+      throw StateError('Application message missing plaintext');
+    }
+    return DecryptedApplicationMessage(plaintext: List<int>.from(app));
+  }
+
+  @override
   Future<DecryptedApplicationMessage?> processIncoming({
     required String groupIdHex,
     required List<int> messageBytes,

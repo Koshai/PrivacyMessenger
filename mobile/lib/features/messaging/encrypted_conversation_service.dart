@@ -10,6 +10,7 @@ import '../../core/network/api_client.dart' show ApiClient, ApiException;
 import '../calling/call_auth.dart';
 import '../calling/call_auth_session.dart';
 import '../calling/call_binding_inbox.dart';
+import 'local_message_store.dart';
 import 'models/envelope.dart';
 
 /// Safe MLS failure record. Fields are stage names, exception types, content
@@ -122,6 +123,7 @@ class EncryptedConversationService {
     required this.mls,
     this.inbox,
     this.engine,
+    this.history,
     this.submitTimeout = const Duration(seconds: 15),
   });
 
@@ -129,6 +131,7 @@ class EncryptedConversationService {
   final MlsSessionManager mls;
   final CallBindingInbox? inbox;
   final MlsGroupEncryptionService? engine;
+  final InboundMessageHistory? history;
 
   /// Bounds only the envelope HTTP submit. MLS encryption is not cancelled
   /// by this timer and is not repeated after it has produced ciphertext.
@@ -420,39 +423,26 @@ class EncryptedConversationService {
         return;
       }
 
-      final DecryptedApplicationMessage? decrypted;
+      if (env.contentType == MlsContentTypes.application) {
+        await _ingestApplication(
+          token: token,
+          svc: svc,
+          env: env,
+          groupId: groupId,
+          myUserId: myUserId,
+          out: out,
+        );
+        return;
+      }
+
       try {
-        decrypted = await svc.processIncoming(
+        await svc.processIncoming(
           groupIdHex: groupId,
           messageBytes: env.ciphertext,
         );
       } catch (error) {
         throw _MlsIngestSignal('application_decrypt', error);
       }
-
-      if (env.contentType == MlsContentTypes.application) {
-        if (decrypted == null) {
-          // Failed crypto must not silently ack/discard (C4).
-          throw _MlsIngestSignal(
-            'application_decrypt',
-            StateError('no plaintext'),
-          );
-        }
-        await _acknowledge(token, env);
-        out.add(
-          ChatMessageView(
-            clientMessageId: env.clientMessageId,
-            serverEnvelopeId: env.id,
-            senderId: env.senderId,
-            plaintext: utf8.decode(decrypted.plaintext),
-            createdAt: env.createdAt,
-            delivery: ChatDeliveryState.sent,
-            isMine: env.senderId == myUserId,
-          ),
-        );
-        return;
-      }
-
       await _acknowledge(token, env);
     }
 
@@ -477,6 +467,173 @@ class EncryptedConversationService {
       }
     }
     return out;
+  }
+
+  /// Stored inbound messages for [conversationId], in history order.
+  Future<List<ChatMessageView>> localTranscript({
+    required String conversationId,
+    required String myUserId,
+  }) async {
+    final stored = history;
+    if (stored == null) return const [];
+    final rows = await stored.listConversation(conversationId);
+    return [
+      for (final row in rows) _viewFromRecord(row, myUserId),
+    ];
+  }
+
+  Future<void> _ingestApplication({
+    required String token,
+    required MlsGroupEncryptionService svc,
+    required MessageEnvelope env,
+    required String groupId,
+    required String myUserId,
+    required List<ChatMessageView> out,
+  }) async {
+    final stored = history;
+    if (stored == null) {
+      throw _MlsIngestSignal(
+        'application_history',
+        StateError('history unavailable'),
+      );
+    }
+
+    final existing = await stored.lookupByEnvelopeId(env.id);
+    if (existing != null &&
+        (existing.conversationId != env.conversationId ||
+            existing.clientMessageId != env.clientMessageId ||
+            existing.senderId != env.senderId)) {
+      throw _MlsIngestSignal(
+        'application_history',
+        StateError('history conflict'),
+      );
+    }
+
+    if (existing?.mlsPhase == LocalMlsPhase.committed) {
+      await _acknowledge(token, env);
+      final received = await _markApplication(
+        stored,
+        conversationId: existing!.conversationId,
+        clientMessageId: existing.clientMessageId,
+        delivery: LocalMessageDelivery.received,
+      );
+      out.add(_viewFromRecord(received, myUserId));
+      return;
+    }
+
+    if (existing == null) {
+      final DecryptedApplicationMessage inspected;
+      try {
+        inspected = await svc.inspectApplication(
+          groupIdHex: groupId,
+          messageBytes: env.ciphertext,
+        );
+      } catch (error) {
+        throw _MlsIngestSignal('application_inspect', error);
+      }
+      final String plaintext;
+      try {
+        plaintext = utf8.decode(inspected.plaintext);
+      } on FormatException {
+        throw _MlsIngestSignal(
+          'application_inspect',
+          StateError('plaintext is not text'),
+        );
+      }
+      try {
+        await stored.insert(
+          LocalMessageDraft(
+            conversationId: env.conversationId,
+            senderId: env.senderId,
+            clientMessageId: env.clientMessageId,
+            envelopeId: env.id,
+            conversationSeq: env.conversationSeq,
+            createdAt: env.createdAt,
+            delivery: LocalMessageDelivery.sent,
+            plaintext: plaintext,
+            mlsPhase: LocalMlsPhase.inspected,
+          ),
+        );
+      } catch (error) {
+        throw _MlsIngestSignal('application_history', error);
+      }
+    }
+
+    final DecryptedApplicationMessage? decrypted;
+    try {
+      decrypted = await svc.processIncoming(
+        groupIdHex: groupId,
+        messageBytes: env.ciphertext,
+      );
+    } catch (error) {
+      throw _MlsIngestSignal('application_decrypt', error);
+    }
+    if (decrypted == null) {
+      throw _MlsIngestSignal(
+        'application_decrypt',
+        StateError('no plaintext'),
+      );
+    }
+
+    final conversationId = existing?.conversationId ?? env.conversationId;
+    final clientMessageId = existing?.clientMessageId ?? env.clientMessageId;
+    await _markApplication(
+      stored,
+      conversationId: conversationId,
+      clientMessageId: clientMessageId,
+      mlsPhase: LocalMlsPhase.committed,
+    );
+    await _acknowledge(token, env);
+    final received = await _markApplication(
+      stored,
+      conversationId: conversationId,
+      clientMessageId: clientMessageId,
+      delivery: LocalMessageDelivery.received,
+    );
+    out.add(_viewFromRecord(received, myUserId));
+  }
+
+  Future<LocalMessageRecord> _markApplication(
+    InboundMessageHistory stored, {
+    required String conversationId,
+    required String clientMessageId,
+    LocalMlsPhase? mlsPhase,
+    LocalMessageDelivery? delivery,
+  }) async {
+    try {
+      return await stored.markInboundState(
+        conversationId: conversationId,
+        clientMessageId: clientMessageId,
+        mlsPhase: mlsPhase,
+        delivery: delivery,
+      );
+    } catch (error) {
+      throw _MlsIngestSignal('application_history', error);
+    }
+  }
+
+  ChatMessageView _viewFromRecord(LocalMessageRecord record, String myUserId) {
+    return ChatMessageView(
+      clientMessageId: record.clientMessageId,
+      serverEnvelopeId: record.envelopeId,
+      senderId: record.senderId,
+      plaintext: record.plaintext,
+      createdAt: record.createdAt,
+      delivery: _chatDelivery(record.delivery),
+      isMine: record.senderId == myUserId,
+    );
+  }
+
+  ChatDeliveryState _chatDelivery(LocalMessageDelivery delivery) {
+    switch (delivery) {
+      case LocalMessageDelivery.sending:
+        return ChatDeliveryState.sending;
+      case LocalMessageDelivery.failed:
+        return ChatDeliveryState.failed;
+      case LocalMessageDelivery.sent:
+      case LocalMessageDelivery.received:
+        return ChatDeliveryState.sent;
+    }
   }
 
   Future<void> _acknowledge(String token, MessageEnvelope env) async {

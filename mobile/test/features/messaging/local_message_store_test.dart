@@ -533,7 +533,7 @@ void main() {
     );
     expect(count, 2);
     final version = await raw.rawQuery('PRAGMA user_version');
-    expect(version.single.values.single, 1);
+    expect(version.single.values.single, LocalMessageStore.schemaVersion);
     await raw.rawQuery('PRAGMA user_version = 5');
     await raw.close();
 
@@ -554,6 +554,102 @@ void main() {
     expect(_containsAscii(fileBytes, secret), isFalse);
     expect(_containsAscii(fileBytes, 'after-migration'), isFalse);
     await preserved.close();
+  });
+
+  test('a version 1 database gains mls phase without losing plaintext', () async {
+    const secret = 'v1-plaintext-kept';
+    final storage = const FlutterSecureStorage();
+    final path = _dbPath(tempDir, 'v1.db');
+    final created = await _open(storage: storage, path: path);
+    await created.insert(_draft(plaintext: secret, envelopeId: 'env-v1'));
+    await created.close();
+
+    final prepared = await databaseFactoryFfi.openDatabase(path);
+    await prepared.execute('''
+      CREATE TABLE local_messages_v1 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_user_id TEXT NOT NULL,
+        owner_device_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        sender_id TEXT NOT NULL,
+        client_message_id TEXT NOT NULL,
+        envelope_id TEXT,
+        conversation_seq INTEGER,
+        created_at TEXT NOT NULL,
+        delivery TEXT NOT NULL,
+        nonce BLOB NOT NULL,
+        mac BLOB NOT NULL,
+        ciphertext BLOB NOT NULL
+      )
+    ''');
+    await prepared.execute('''
+      INSERT INTO local_messages_v1 (
+        id, owner_user_id, owner_device_id, conversation_id, sender_id,
+        client_message_id, envelope_id, conversation_seq, created_at,
+        delivery, nonce, mac, ciphertext
+      )
+      SELECT
+        id, owner_user_id, owner_device_id, conversation_id, sender_id,
+        client_message_id, envelope_id, conversation_seq, created_at,
+        delivery, nonce, mac, ciphertext
+      FROM local_messages
+    ''');
+    await prepared.execute('DROP TABLE local_messages');
+    await prepared.execute(
+      'ALTER TABLE local_messages_v1 RENAME TO local_messages',
+    );
+    await prepared.execute('''
+      CREATE UNIQUE INDEX local_messages_client_uid
+      ON local_messages (
+        owner_user_id, owner_device_id, conversation_id, client_message_id
+      )
+    ''');
+    await prepared.execute('''
+      CREATE UNIQUE INDEX local_messages_envelope_uid
+      ON local_messages (owner_user_id, owner_device_id, envelope_id)
+      WHERE envelope_id IS NOT NULL
+    ''');
+    await prepared.rawUpdate(
+      'UPDATE message_store_meta SET meta_value = ? WHERE meta_key = ?',
+      ['1', 'schema_version'],
+    );
+    await prepared.rawQuery('PRAGMA user_version = 1');
+    await prepared.close();
+
+    final migrated = await _open(storage: storage, path: path);
+    final legacy = (await migrated.listConversation('conversation-1')).single;
+    expect(legacy.plaintext, secret);
+    expect(legacy.mlsPhase, isNull);
+    expect(legacy.delivery, LocalMessageDelivery.sending);
+    final committed = await migrated.markInboundState(
+      conversationId: 'conversation-1',
+      clientMessageId: 'client-1',
+      mlsPhase: LocalMlsPhase.committed,
+      delivery: LocalMessageDelivery.received,
+    );
+    expect(committed.plaintext, secret);
+    expect(committed.mlsPhase, LocalMlsPhase.committed);
+    expect(committed.delivery, LocalMessageDelivery.received);
+    await migrated.close();
+
+    final reopened = await _open(storage: storage, path: path);
+    final again = (await reopened.listConversation('conversation-1')).single;
+    expect(again.plaintext, secret);
+    expect(again.mlsPhase, LocalMlsPhase.committed);
+    await reopened.close();
+
+    final tampered = await databaseFactoryFfi.openDatabase(path);
+    await tampered.rawUpdate(
+      'UPDATE local_messages SET mls_phase = ?',
+      ['not-a-phase'],
+    );
+    await tampered.close();
+    final rejected = await _open(storage: storage, path: path);
+    await expectLater(
+      rejected.listConversation('conversation-1'),
+      throwsA(isA<MessageHistoryCorruptException>()),
+    );
+    await rejected.close();
   });
 
   test('malformed metadata fails closed and deletion is scoped', () async {

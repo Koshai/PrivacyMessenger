@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -15,7 +16,9 @@ import 'package:private_messenger/features/calling/call_auth_session.dart';
 import 'package:private_messenger/features/calling/call_binding_inbox.dart';
 import 'package:private_messenger/features/calling/call_key_binding.dart';
 import 'package:private_messenger/features/messaging/encrypted_conversation_service.dart';
+import 'package:private_messenger/features/messaging/local_message_store.dart';
 import 'package:private_messenger/features/messaging/models/envelope.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 const _alice = '11111111-1111-4111-8111-111111111111';
 const _aliceDev = '22222222-2222-4222-8222-222222222222';
@@ -26,6 +29,7 @@ void main() {
   late Directory tempDir;
 
   setUpAll(() async {
+    sqfliteFfiInit();
     await Openmls.init();
   });
 
@@ -145,11 +149,21 @@ void main() {
     );
     final store = MemoryCallAuthStore();
     final inbox = CallBindingInbox(store: store);
+    FlutterSecureStorage.setMockInitialValues({});
+    final history = await LocalMessageStore.open(
+      userId: _bob,
+      deviceId: _aliceDev,
+      dbPath: '${tempDir.path}${Platform.pathSeparator}messages_bob.db',
+      storage: const FlutterSecureStorage(),
+      factory: databaseFactoryFfi,
+    );
+    addTearDown(history.close);
     final pipeline = EncryptedConversationService(
       api: api,
       mls: MlsSessionManager(),
       inbox: inbox,
       engine: bob.service,
+      history: history,
     );
     pipeline.rememberGroup(_conv, bob.groupIdHex!);
     pipeline.bindConversationPeer(_conv, _alice);

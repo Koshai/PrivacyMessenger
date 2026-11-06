@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 import 'core/auth/auth_controller.dart';
 import 'core/auth/auth_state.dart';
@@ -18,6 +19,7 @@ import 'features/calling/call_auth_session.dart';
 import 'features/calling/call_binding_inbox.dart';
 import 'features/calling/call_key_binding.dart';
 import 'features/messaging/encrypted_conversation_service.dart';
+import 'features/messaging/local_message_store.dart';
 import 'features/calling/call_platform.dart';
 import 'features/calling/call_controller.dart';
 import 'features/calling/call_screens.dart';
@@ -158,18 +160,17 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
   late final CallController _calls;
   late final RealtimeClient _realtime;
   late final CallBindingInbox _bindingInbox;
-  late final EncryptedConversationService _messaging;
+  LocalMessageStore? _history;
+  EncryptedConversationService? _messaging;
+  bool _historyUnavailable = false;
+  bool _shellDisposed = false;
   String _token = '';
 
   @override
   void initState() {
     super.initState();
     _bindingInbox = CallBindingInbox();
-    _messaging = EncryptedConversationService(
-      api: widget.apiClient,
-      mls: widget.mls,
-      inbox: _bindingInbox,
-    );
+    unawaited(_openMessaging());
     final base = ApiConfig.baseUri;
     _realtime = RealtimeClient(
       wsBaseUri: base.replace(
@@ -203,11 +204,18 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
           );
         }
         _calls.localSafetyFingerprintHex = record.fingerprintHex;
+        final pipeline = _messaging;
+        if (pipeline == null) {
+          return const CallAuthOutcome(
+            phase: CallAuthPhase.failed,
+            error: 'Encrypted history is not available',
+          );
+        }
         final channel = MlsCallKeyChannel(
           api: widget.apiClient,
           mls: widget.mls,
           token: () => _token,
-          pipeline: _messaging,
+          pipeline: pipeline,
           inbox: _bindingInbox,
           myUserId: () => widget.authController.state.userId ?? '',
         );
@@ -245,6 +253,50 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
     return listed.any((e) => e.deviceId == peerDevice);
   }
 
+  Future<void> _openMessaging() async {
+    final userId = widget.authController.state.userId;
+    final deviceId = widget.authController.state.deviceId;
+    if (userId == null || deviceId == null) {
+      if (mounted) setState(() => _historyUnavailable = true);
+      return;
+    }
+    try {
+      final directory = await getApplicationSupportDirectory();
+      final path = LocalMessageStore.databasePath(
+        directory: directory.path,
+        userId: userId,
+        deviceId: deviceId,
+      );
+      final history = await LocalMessageStore.open(
+        userId: userId,
+        deviceId: deviceId,
+        dbPath: path,
+      );
+      if (!mounted || _shellDisposed) {
+        await history.close();
+        return;
+      }
+      _history = history;
+      if (_shellDisposed) {
+        await history.close();
+        _history = null;
+        return;
+      }
+      setState(() {
+        _messaging = EncryptedConversationService(
+          api: widget.apiClient,
+          mls: widget.mls,
+          inbox: _bindingInbox,
+          history: history,
+        );
+      });
+    } catch (_) {
+      if (mounted && !_shellDisposed) {
+        setState(() => _historyUnavailable = true);
+      }
+    }
+  }
+
   Future<void> _bootstrap() async {
     _token = await widget.authController.sessionToken() ?? '';
     if (_token.isNotEmpty) {
@@ -255,6 +307,12 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
 
   @override
   void dispose() {
+    _shellDisposed = true;
+    final history = _history;
+    if (history != null) {
+      _history = null;
+      unawaited(history.close());
+    }
     _calls.dispose();
     _realtime.dispose();
     super.dispose();
@@ -262,6 +320,19 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
 
   @override
   Widget build(BuildContext context) {
+    if (_historyUnavailable) {
+      return const Scaffold(
+        body: Center(
+          child: Text('Encrypted history could not be opened'),
+        ),
+      );
+    }
+    final messaging = _messaging;
+    if (messaging == null) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
     return CallHost(
       controller: _calls,
       child: MainNavigation(
@@ -272,7 +343,7 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
         apiClient: widget.apiClient,
         authController: widget.authController,
         mls: widget.mls,
-        messaging: _messaging,
+        messaging: messaging,
         callController: _calls,
       ),
     );

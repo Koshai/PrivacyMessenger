@@ -110,14 +110,12 @@ class ConversationController extends ChangeNotifier {
         token: token,
         conversationId: info.conversationId,
       );
-      final incoming = await _service.ingestEnvelopes(
+      await _service.ingestEnvelopes(
         token: token,
         myUserId: auth.state.userId!,
         envelopes: selectEnvelopesForIngest(history: history, pending: pending),
       );
-      messages
-        ..clear()
-        ..addAll(incoming);
+      await restoreLocalHistory();
       keyChangeWarning = _service.keyChangeWarning;
 
       await _realtime.start(token);
@@ -140,26 +138,57 @@ class ConversationController extends ChangeNotifier {
     try {
       final pending = await api.syncPending(token: token);
       final mine = pending.where((e) => e.conversationId == cid).toList();
-      final added = await _service.ingestEnvelopes(
+      await _service.ingestEnvelopes(
         token: token,
         myUserId: auth.state.userId!,
         envelopes: mine,
       );
-      if (added.isNotEmpty) {
-        messages.addAll(added);
-      }
+      final before = _transcriptKey();
+      await restoreLocalHistory();
       final warning = _service.keyChangeWarning;
       final warningChanged = warning != null && warning != keyChangeWarning;
       if (warningChanged) keyChangeWarning = warning;
       final wasOffline = offline;
       offline = false;
-      if (added.isNotEmpty || warningChanged || wasOffline) {
+      if (before != _transcriptKey() || warningChanged || wasOffline) {
         _notify();
       }
     } catch (_) {
       offline = true;
       _notify();
     }
+  }
+
+  /// Replaces the visible transcript with stored history, keeping outgoing rows.
+  @visibleForTesting
+  Future<void> restoreLocalHistory() async {
+    final cid = conversationId;
+    final userId = auth.state.userId;
+    if (cid == null || userId == null) return;
+    final stored = await _service.localTranscript(
+      conversationId: cid,
+      myUserId: userId,
+    );
+    final outgoing = messages.where((message) => message.isMine).toList();
+    messages
+      ..clear()
+      ..addAll(stored);
+    for (final message in outgoing) {
+      final kept = messages.any(
+        (existing) => existing.clientMessageId == message.clientMessageId,
+      );
+      if (!kept) messages.add(message);
+    }
+  }
+
+  String _transcriptKey() {
+    return messages
+        .map(
+          (message) =>
+              '${message.clientMessageId}|${message.serverEnvelopeId}|'
+              '${message.delivery.name}|${message.plaintext.hashCode}',
+        )
+        .join('\n');
   }
 
   Future<void> send(String text, {String? clientMessageId}) async {

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -76,6 +77,20 @@ void main() {
     await bob.join(invite.welcome);
 
     final fromAlice = await alice.sendText('hello bob');
+    final beforeInspect = _snapshot(tempDir, 'mls_bob');
+    final epochBefore = await bob.service.groupEpoch(
+      groupIdHex: bob.groupIdHex!,
+    );
+    final inspected = await bob.service.inspectApplication(
+      groupIdHex: bob.groupIdHex!,
+      messageBytes: fromAlice.bytes,
+    );
+    expect(utf8.decode(inspected.plaintext), 'hello bob');
+    expect(_snapshot(tempDir, 'mls_bob'), beforeInspect);
+    expect(
+      await bob.service.groupEpoch(groupIdHex: bob.groupIdHex!),
+      epochBefore,
+    );
     final bobSees = await bob.receiveText(fromAlice);
     expect(bobSees, 'hello bob');
 
@@ -275,4 +290,15 @@ void main() {
     await expectLater(orphan.ensureIdentityKeys(), throwsStateError);
     await orphan.persistAndClose();
   });
+}
+
+Map<String, List<int>> _snapshot(Directory dir, String namePrefix) {
+  final files = <String, List<int>>{};
+  for (final entity in dir.listSync()) {
+    if (entity is! File) continue;
+    final name = entity.uri.pathSegments.last;
+    if (!name.contains(namePrefix)) continue;
+    files[name] = entity.readAsBytesSync();
+  }
+  return files;
 }

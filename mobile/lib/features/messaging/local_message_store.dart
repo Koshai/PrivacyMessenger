@@ -15,7 +15,7 @@ import 'package:sqflite/sqflite.dart';
 /// The 256-bit key lives in [FlutterSecureStorage] (Android Keystore / iOS
 /// Keychain). A missing key is created only when no history file exists yet.
 /// A missing or malformed key is never replaced when a history file is present.
-class LocalMessageStore {
+class LocalMessageStore implements InboundMessageHistory {
   LocalMessageStore._({
     required this.userId,
     required this.deviceId,
@@ -25,7 +25,7 @@ class LocalMessageStore {
   });
 
   /// Current on-disk schema. Migrations may only add objects.
-  static const schemaVersion = 1;
+  static const schemaVersion = 2;
 
   static const _messagesTable = 'local_messages';
   static const _metaTable = 'message_store_meta';
@@ -112,9 +112,34 @@ class LocalMessageStore {
         '${deviceId.length}.$deviceId';
   }
 
+  /// Path of the history file for this account. It is never an MLS database.
+  static String databasePath({
+    required String directory,
+    required String userId,
+    required String deviceId,
+  }) {
+    _validateOwner(userId: userId, deviceId: deviceId);
+    if (directory.trim().isEmpty) {
+      throw ArgumentError('message history directory is empty');
+    }
+    for (final value in [userId, deviceId]) {
+      if (value.contains('/') ||
+          value.contains('\\') ||
+          value.contains('\u0000')) {
+        throw ArgumentError('message history path is invalid');
+      }
+    }
+    final name = 'messages_${userId}_$deviceId.db';
+    if (name.startsWith('mls_')) {
+      throw ArgumentError('message history path is invalid');
+    }
+    return '$directory${Platform.pathSeparator}$name';
+  }
+
   /// Inserts a message, or returns the existing row when every authenticated
   /// field and the plaintext match. A reused client id or envelope id with
   /// different contents is left unchanged and reported as a conflict.
+  @override
   Future<LocalMessageRecord> insert(LocalMessageDraft draft) {
     return _enqueue(() async {
       final db = _requireDb();
@@ -151,7 +176,7 @@ class LocalMessageStore {
     });
   }
 
-  /// Updates delivery, the server envelope id, or the conversation sequence.
+  /// Updates delivery, MLS phase, the server envelope id, or the sequence.
   ///
   /// The plaintext is encrypted again because those fields are part of the
   /// authenticated metadata. The previous row is restored if the write fails.
@@ -161,6 +186,7 @@ class LocalMessageStore {
     LocalMessageDelivery? delivery,
     Object? envelopeId = _unchanged,
     Object? conversationSeq = _unchanged,
+    Object? mlsPhase = _unchanged,
   }) {
     return _enqueue(() async {
       final db = _requireDb();
@@ -182,6 +208,9 @@ class LocalMessageStore {
         final nextSeq = conversationSeq == _unchanged
             ? current.conversationSeq
             : _optionalSeq(conversationSeq);
+        final nextPhase = mlsPhase == _unchanged
+            ? current.mlsPhase
+            : _optionalPhase(mlsPhase);
         if (nextEnvelope != null) {
           final occupied = await _rowByEnvelope(txn, nextEnvelope);
           final occupiedClient = occupied?['client_message_id'];
@@ -191,7 +220,7 @@ class LocalMessageStore {
             throw const MessageHistoryConflictException();
           }
         }
-        final updated = LocalMessageRecord._(
+        final updated = LocalMessageRecord(
           ownerUserId: userId,
           ownerDeviceId: deviceId,
           conversationId: current.conversationId,
@@ -201,6 +230,7 @@ class LocalMessageStore {
           conversationSeq: nextSeq,
           createdAtRaw: current.createdAtRaw,
           delivery: delivery ?? current.delivery,
+          mlsPhase: nextPhase,
           plaintext: current.plaintext,
         );
         final written = await _encryptedRow(updated);
@@ -226,6 +256,21 @@ class LocalMessageStore {
     });
   }
 
+  @override
+  Future<LocalMessageRecord> markInboundState({
+    required String conversationId,
+    required String clientMessageId,
+    LocalMlsPhase? mlsPhase,
+    LocalMessageDelivery? delivery,
+  }) {
+    return update(
+      conversationId: conversationId,
+      clientMessageId: clientMessageId,
+      delivery: delivery,
+      mlsPhase: mlsPhase ?? _unchanged,
+    );
+  }
+
   Future<LocalMessageRecord?> lookupByClientMessageId({
     required String conversationId,
     required String clientMessageId,
@@ -245,6 +290,7 @@ class LocalMessageStore {
     });
   }
 
+  @override
   Future<LocalMessageRecord?> lookupByEnvelopeId(String envelopeId) {
     return _enqueue(() async {
       final normalized = _optionalText(envelopeId, 'envelopeId');
@@ -264,6 +310,7 @@ class LocalMessageStore {
   /// Messages in [conversationId], sequenced rows first, then unsequenced rows.
   ///
   /// Ties break by canonical timestamp and then client message id.
+  @override
   Future<List<LocalMessageRecord>> listConversation(String conversationId) {
     return _enqueue(() async {
       if (conversationId.trim().isEmpty) {
@@ -462,6 +509,15 @@ class LocalMessageStore {
         )
       ''');
     }
+    if (from < 2) {
+      final columns = await db.rawQuery('PRAGMA table_info($_messagesTable)');
+      final hasPhase = columns.any((row) => row['name'] == 'mls_phase');
+      if (!hasPhase) {
+        await db.execute(
+          'ALTER TABLE $_messagesTable ADD COLUMN mls_phase TEXT',
+        );
+      }
+    }
     await db.rawInsert(
       '''
       INSERT INTO $_metaTable (meta_key, meta_value)
@@ -608,7 +664,7 @@ class LocalMessageStore {
     LocalMessageDraft draft,
     String createdAt,
   ) {
-    return LocalMessageRecord._(
+    return LocalMessageRecord(
       ownerUserId: userId,
       ownerDeviceId: deviceId,
       conversationId: draft.conversationId,
@@ -618,6 +674,7 @@ class LocalMessageStore {
       conversationSeq: draft.conversationSeq,
       createdAtRaw: createdAt,
       delivery: draft.delivery,
+      mlsPhase: draft.mlsPhase,
       plaintext: draft.plaintext,
     );
   }
@@ -632,6 +689,7 @@ class LocalMessageStore {
         existing.conversationSeq == draft.conversationSeq &&
         existing.createdAtRaw == createdAt &&
         existing.delivery == draft.delivery &&
+        existing.mlsPhase == draft.mlsPhase &&
         existing.plaintext == draft.plaintext;
   }
 
@@ -651,6 +709,7 @@ class LocalMessageStore {
       'conversation_seq': record.conversationSeq,
       'created_at': record.createdAtRaw,
       'delivery': record.delivery.name,
+      'mls_phase': record.mlsPhase?.name,
       'nonce': Uint8List.fromList(box.nonce),
       'mac': Uint8List.fromList(box.mac.bytes),
       'ciphertext': Uint8List.fromList(box.cipherText),
@@ -692,7 +751,7 @@ class LocalMessageStore {
     if (DateTime.tryParse(createdAtRaw) == null) {
       throw const MessageHistoryCorruptException();
     }
-    return LocalMessageRecord._(
+    return LocalMessageRecord(
       ownerUserId: ownerUserId,
       ownerDeviceId: ownerDeviceId,
       conversationId: _text(row['conversation_id']),
@@ -702,6 +761,7 @@ class LocalMessageStore {
       conversationSeq: _nullableSeq(row['conversation_seq']),
       createdAtRaw: createdAtRaw,
       delivery: _delivery(row['delivery']),
+      mlsPhase: _phase(row['mls_phase']),
       plaintext: '',
     );
   }
@@ -728,7 +788,8 @@ class LocalMessageStore {
         ..add(bytes);
     }
 
-    add('1');
+    final phase = record.mlsPhase;
+    add(phase == null ? '1' : '2');
     add(record.ownerUserId);
     add(record.ownerDeviceId);
     add(record.conversationId);
@@ -740,6 +801,7 @@ class LocalMessageStore {
     );
     add(record.createdAtRaw);
     add(record.delivery.name);
+    if (phase != null) add(phase.name);
     return builder.toBytes();
   }
 
@@ -787,6 +849,14 @@ class LocalMessageStore {
     return _textValue(value, name);
   }
 
+  static LocalMlsPhase? _optionalPhase(Object? value) {
+    if (value == null) return null;
+    if (value is! LocalMlsPhase) {
+      throw ArgumentError('mls phase is invalid');
+    }
+    return value;
+  }
+
   static int? _optionalSeq(Object? value) {
     if (value == null) return null;
     if (value is! int) {
@@ -821,6 +891,15 @@ class LocalMessageStore {
       throw const MessageHistoryCorruptException();
     }
     return value;
+  }
+
+  static LocalMlsPhase? _phase(Object? value) {
+    if (value == null) return null;
+    if (value is! String) throw const MessageHistoryCorruptException();
+    for (final phase in LocalMlsPhase.values) {
+      if (phase.name == value) return phase;
+    }
+    throw const MessageHistoryCorruptException();
   }
 
   static LocalMessageDelivery _delivery(Object? value) {
@@ -859,9 +938,29 @@ const Object _unchanged = Object();
 
 enum LocalMessageDelivery { sending, sent, failed, received }
 
+/// MLS progress for an inbound application message. Delivery is separate.
+enum LocalMlsPhase { inspected, committed }
+
+/// Reads and writes used by inbound history. Implementations must not open
+/// the OpenMLS database.
+abstract interface class InboundMessageHistory {
+  Future<LocalMessageRecord?> lookupByEnvelopeId(String envelopeId);
+
+  Future<List<LocalMessageRecord>> listConversation(String conversationId);
+
+  Future<LocalMessageRecord> insert(LocalMessageDraft draft);
+
+  Future<LocalMessageRecord> markInboundState({
+    required String conversationId,
+    required String clientMessageId,
+    LocalMlsPhase? mlsPhase,
+    LocalMessageDelivery? delivery,
+  });
+}
+
 /// Plaintext message returned by the store. [toString] omits the plaintext.
 class LocalMessageRecord {
-  LocalMessageRecord._({
+  LocalMessageRecord({
     required this.ownerUserId,
     required this.ownerDeviceId,
     required this.conversationId,
@@ -871,6 +970,7 @@ class LocalMessageRecord {
     required this.conversationSeq,
     required this.createdAtRaw,
     required this.delivery,
+    required this.mlsPhase,
     required this.plaintext,
   });
 
@@ -883,12 +983,13 @@ class LocalMessageRecord {
   final int? conversationSeq;
   final String createdAtRaw;
   final LocalMessageDelivery delivery;
+  final LocalMlsPhase? mlsPhase;
   final String plaintext;
 
   DateTime get createdAt => DateTime.parse(createdAtRaw).toUtc();
 
   LocalMessageRecord _withPlaintext(String value) {
-    return LocalMessageRecord._(
+    return LocalMessageRecord(
       ownerUserId: ownerUserId,
       ownerDeviceId: ownerDeviceId,
       conversationId: conversationId,
@@ -898,6 +999,7 @@ class LocalMessageRecord {
       conversationSeq: conversationSeq,
       createdAtRaw: createdAtRaw,
       delivery: delivery,
+      mlsPhase: mlsPhase,
       plaintext: value,
     );
   }
@@ -918,6 +1020,7 @@ class LocalMessageDraft {
     required this.plaintext,
     this.envelopeId,
     this.conversationSeq,
+    this.mlsPhase,
   });
 
   final String conversationId;
@@ -927,6 +1030,7 @@ class LocalMessageDraft {
   final int? conversationSeq;
   final DateTime createdAt;
   final LocalMessageDelivery delivery;
+  final LocalMlsPhase? mlsPhase;
   final String plaintext;
 
   @override

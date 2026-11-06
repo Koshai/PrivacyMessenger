@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -15,7 +17,9 @@ import 'package:private_messenger/features/auth/models/auth_identity.dart';
 import 'package:private_messenger/features/auth/models/auth_session.dart';
 import 'package:private_messenger/features/messaging/conversation_controller.dart';
 import 'package:private_messenger/features/messaging/encrypted_conversation_service.dart';
+import 'package:private_messenger/features/messaging/local_message_store.dart';
 import 'package:private_messenger/features/messaging/models/envelope.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 const _me = '11111111-1111-4111-8111-111111111111';
 const _device = '22222222-2222-4222-8222-222222222222';
@@ -46,17 +50,20 @@ class _ScriptedMls implements MlsGroupEncryptionService {
     this.encryptError,
     this.joinError,
     this.processError,
+    this.inspectError,
     this.returnNull = false,
   });
 
   Object? encryptError;
   Object? joinError;
   Object? processError;
+  Object? inspectError;
   bool returnNull;
   Future<void>? encryptGate;
   int encryptCalls = 0;
   int joinCalls = 0;
   int processCalls = 0;
+  int inspectCalls = 0;
   BigInt? scriptedGroupEpoch;
   BigInt? scriptedMessageEpoch;
 
@@ -84,6 +91,16 @@ class _ScriptedMls implements MlsGroupEncryptionService {
     joinCalls++;
     if (joinError != null) throw joinError!;
     return 'abc';
+  }
+
+  @override
+  Future<DecryptedApplicationMessage> inspectApplication({
+    required String groupIdHex,
+    required List<int> messageBytes,
+  }) async {
+    inspectCalls++;
+    if (inspectError != null) throw inspectError!;
+    return const DecryptedApplicationMessage(plaintext: [104, 105]);
   }
 
   @override
@@ -152,6 +169,8 @@ class _ScriptedMls implements MlsGroupEncryptionService {
 void main() {
   final logs = <String>[];
   late DebugPrintCallback previousDebugPrint;
+
+  setUpAll(sqfliteFfiInit);
 
   setUp(() {
     logs.clear();
@@ -314,6 +333,7 @@ void main() {
       envelopes: [_env('c', 4, MlsContentTypes.commit)],
     );
     expect(commitAcks, isEmpty);
+    expect(commit.inspectCalls, 0);
     expect(
       commitService.keyChangeWarning,
       EncryptedConversationService.processingWarning,
@@ -485,6 +505,7 @@ void main() {
     );
     expect(views, hasLength(1));
     expect(views.single.plaintext, 'hi');
+    expect(engine.inspectCalls, 1);
     expect(engine.processCalls, 1);
     expect(acks, ['a']);
     expect(service.keyChangeWarning, isNull);
@@ -611,6 +632,291 @@ void main() {
     );
     expect(_event('application_decrypt').exceptionType, 'StateError');
   });
+
+  group('inbound local history', () {
+    late Directory tempDir;
+
+    setUp(() async {
+      FlutterSecureStorage.setMockInitialValues({});
+      tempDir = await Directory.systemTemp.createTemp('pm_inbound_');
+    });
+
+    tearDown(() async {
+      if (tempDir.existsSync()) {
+        await tempDir.delete(recursive: true);
+      }
+    });
+
+    test('inspects, stores, processes, and acknowledges one new envelope', () async {
+      final store = await _openHistory(tempDir);
+      addTearDown(store.close);
+      final acks = <String>[];
+      final engine = _ScriptedMls();
+      final service = _service(engine, acks: acks, history: store);
+      service.bindConversationPeer(_conv, _peer);
+      service.rememberGroup(_conv, 'abc');
+
+      final views = await service.ingestEnvelopes(
+        token: 'tok',
+        myUserId: _me,
+        envelopes: [_env('a', 4, MlsContentTypes.application)],
+      );
+
+      expect(views, hasLength(1));
+      expect(views.single.plaintext, 'hi');
+      expect(engine.inspectCalls, 1);
+      expect(engine.processCalls, 1);
+      expect(acks, ['a']);
+      final stored = await store.lookupByEnvelopeId('a');
+      expect(stored!.plaintext, 'hi');
+      expect(stored.mlsPhase, LocalMlsPhase.committed);
+      expect(stored.delivery, LocalMessageDelivery.received);
+    });
+
+    test('a new controller restores stored history without decrypting again', () async {
+      final store = await _openHistory(tempDir);
+      addTearDown(store.close);
+      final engine = _ScriptedMls();
+      final service = _service(engine, history: store);
+      service.bindConversationPeer(_conv, _peer);
+      service.rememberGroup(_conv, 'abc');
+      await service.ingestEnvelopes(
+        token: 'tok',
+        myUserId: _me,
+        envelopes: [_env('a', 4, MlsContentTypes.application)],
+      );
+
+      final first = await _controller(service);
+      addTearDown(first.dispose);
+      first.controller.conversationId = _conv;
+      await first.controller.restoreLocalHistory();
+      expect(first.controller.messages, hasLength(1));
+      expect(first.controller.messages.single.plaintext, 'hi');
+
+      final second = await _controller(service);
+      addTearDown(second.dispose);
+      second.controller.conversationId = _conv;
+      await second.controller.restoreLocalHistory();
+      expect(second.controller.messages, hasLength(1));
+      expect(second.controller.messages.single.plaintext, 'hi');
+      expect(engine.inspectCalls, 1);
+      expect(engine.processCalls, 1);
+    });
+
+    test('a duplicate pending envelope is not shown twice', () async {
+      final store = await _openHistory(tempDir);
+      addTearDown(store.close);
+      final acks = <String>[];
+      final engine = _ScriptedMls();
+      final service = _service(engine, acks: acks, history: store);
+      service.bindConversationPeer(_conv, _peer);
+      service.rememberGroup(_conv, 'abc');
+      final envelope = _env('a', 4, MlsContentTypes.application);
+      await service.ingestEnvelopes(
+        token: 'tok',
+        myUserId: _me,
+        envelopes: [envelope],
+      );
+      final restarted = _service(engine, acks: acks, history: store);
+      restarted.bindConversationPeer(_conv, _peer);
+      restarted.rememberGroup(_conv, 'abc');
+      final again = await restarted.ingestEnvelopes(
+        token: 'tok',
+        myUserId: _me,
+        envelopes: [envelope],
+      );
+      expect(again, hasLength(1));
+      expect(engine.inspectCalls, 1);
+      expect(engine.processCalls, 1);
+      expect(acks, ['a', 'a']);
+
+      final controller = await _controller(service);
+      addTearDown(controller.dispose);
+      controller.controller.conversationId = _conv;
+      await controller.controller.restoreLocalHistory();
+      expect(controller.controller.messages, hasLength(1));
+      expect(controller.controller.messages.single.plaintext, 'hi');
+    });
+
+    test('an inspected row is processed again and then acknowledged', () async {
+      final store = await _openHistory(tempDir);
+      addTearDown(store.close);
+      final engine = _ScriptedMls(processError: _SecretLeak());
+      final firstAcks = <String>[];
+      final first = _service(engine, acks: firstAcks, history: store);
+      first.bindConversationPeer(_conv, _peer);
+      first.rememberGroup(_conv, 'abc');
+      final envelope = _env('a', 4, MlsContentTypes.application);
+      final failed = await first.ingestEnvelopes(
+        token: 'tok',
+        myUserId: _me,
+        envelopes: [envelope],
+      );
+      expect(failed, isEmpty);
+      expect(firstAcks, isEmpty);
+      expect(engine.inspectCalls, 1);
+      expect(engine.processCalls, 1);
+      expect((await store.lookupByEnvelopeId('a'))!.mlsPhase, LocalMlsPhase.inspected);
+
+      engine.processError = null;
+      final secondAcks = <String>[];
+      final second = _service(engine, acks: secondAcks, history: store);
+      second.bindConversationPeer(_conv, _peer);
+      second.rememberGroup(_conv, 'abc');
+      final retried = await second.ingestEnvelopes(
+        token: 'tok',
+        myUserId: _me,
+        envelopes: [envelope],
+      );
+      expect(retried.single.plaintext, 'hi');
+      expect(secondAcks, ['a']);
+      expect(engine.inspectCalls, 1);
+      expect(engine.processCalls, 2);
+      expect(
+        (await store.lookupByEnvelopeId('a'))!.mlsPhase,
+        LocalMlsPhase.committed,
+      );
+    });
+
+    test('an uncertain process retry is not acknowledged', () async {
+      final store = await _openHistory(tempDir);
+      addTearDown(store.close);
+      final engine = _ScriptedMls();
+      final first = _service(engine, history: _FailOnCommit(store));
+      first.bindConversationPeer(_conv, _peer);
+      first.rememberGroup(_conv, 'abc');
+      final envelope = _env('a', 4, MlsContentTypes.application);
+      final interrupted = await first.ingestEnvelopes(
+        token: 'tok',
+        myUserId: _me,
+        envelopes: [envelope],
+      );
+      expect(interrupted, isEmpty);
+      expect(engine.processCalls, 1);
+      final saved = await store.lookupByEnvelopeId('a');
+      expect(saved!.plaintext, 'hi');
+      expect(saved.mlsPhase, LocalMlsPhase.inspected);
+
+      engine.processError = _ReuseLeak();
+      final acks = <String>[];
+      final second = _service(engine, acks: acks, history: store);
+      second.bindConversationPeer(_conv, _peer);
+      second.rememberGroup(_conv, 'abc');
+      final retried = await second.ingestEnvelopes(
+        token: 'tok',
+        myUserId: _me,
+        envelopes: [envelope],
+      );
+      expect(retried, isEmpty);
+      expect(acks, isEmpty);
+      expect(engine.processCalls, 2);
+      final kept = await store.lookupByEnvelopeId('a');
+      expect(kept!.plaintext, 'hi');
+      expect(kept.mlsPhase, LocalMlsPhase.inspected);
+      expect(kept.delivery, isNot(LocalMessageDelivery.received));
+    });
+
+    test('a committed row is acknowledged without decrypting', () async {
+      final store = await _openHistory(tempDir);
+      addTearDown(store.close);
+      final engine = _ScriptedMls();
+      var rejectAck = true;
+      final attempts = <String>[];
+      final service = _service(
+        engine,
+        acks: attempts,
+        history: store,
+        ackStatus: () => rejectAck ? 500 : 204,
+      );
+      service.bindConversationPeer(_conv, _peer);
+      service.rememberGroup(_conv, 'abc');
+      final envelope = _env('a', 4, MlsContentTypes.application);
+      final waiting = await service.ingestEnvelopes(
+        token: 'tok',
+        myUserId: _me,
+        envelopes: [envelope],
+      );
+      expect(waiting, isEmpty);
+      expect(attempts, ['a']);
+      expect(engine.processCalls, 1);
+      expect(
+        (await store.lookupByEnvelopeId('a'))!.mlsPhase,
+        LocalMlsPhase.committed,
+      );
+
+      rejectAck = false;
+      final acked = await service.ingestEnvelopes(
+        token: 'tok',
+        myUserId: _me,
+        envelopes: [envelope],
+      );
+      expect(acked.single.plaintext, 'hi');
+      expect(attempts, ['a', 'a']);
+      expect(engine.inspectCalls, 1);
+      expect(engine.processCalls, 1);
+      expect(
+        (await store.lookupByEnvelopeId('a'))!.delivery,
+        LocalMessageDelivery.received,
+      );
+    });
+
+    test('failed inspection does not process or acknowledge', () async {
+      final store = await _openHistory(tempDir);
+      addTearDown(store.close);
+      final acks = <String>[];
+      final engine = _ScriptedMls(inspectError: _SecretLeak());
+      final service = _service(engine, acks: acks, history: store);
+      service.bindConversationPeer(_conv, _peer);
+      service.rememberGroup(_conv, 'abc');
+      final views = await service.ingestEnvelopes(
+        token: 'tok',
+        myUserId: _me,
+        envelopes: [_env('a', 4, MlsContentTypes.application)],
+      );
+      expect(views, isEmpty);
+      expect(acks, isEmpty);
+      expect(engine.inspectCalls, 1);
+      expect(engine.processCalls, 0);
+      expect(await store.lookupByEnvelopeId('a'), isNull);
+    });
+
+    test('a failed history write does not process or acknowledge', () async {
+      final acks = <String>[];
+      final engine = _ScriptedMls();
+      final service = _service(engine, acks: acks, history: _InsertFails());
+      service.bindConversationPeer(_conv, _peer);
+      service.rememberGroup(_conv, 'abc');
+      final views = await service.ingestEnvelopes(
+        token: 'tok',
+        myUserId: _me,
+        envelopes: [_env('a', 4, MlsContentTypes.application)],
+      );
+      expect(views, isEmpty);
+      expect(acks, isEmpty);
+      expect(engine.inspectCalls, 1);
+      expect(engine.processCalls, 0);
+    });
+
+    test('sending does not write local history', () async {
+      final store = await _openHistory(tempDir);
+      addTearDown(store.close);
+      final engine = _ScriptedMls();
+      final service = _service(engine, history: store);
+      service.rememberGroup(_conv, 'abc');
+      final sent = await service.sendText(
+        token: 'tok',
+        conversationId: _conv,
+        myUserId: _me,
+        plaintext: 'outgoing',
+        clientMessageId: 'out-1',
+      );
+      expect(sent.delivery, ChatDeliveryState.sent);
+      expect(engine.encryptCalls, 1);
+      expect(engine.inspectCalls, 0);
+      expect(engine.processCalls, 0);
+      expect(await store.listConversation(_conv), isEmpty);
+    });
+  });
 }
 
 MlsDiagnosticEvent _event(String stage) {
@@ -699,6 +1005,8 @@ Future<_Harness> _harness({
 EncryptedConversationService _service(
   _ScriptedMls engine, {
   List<String>? acks,
+  InboundMessageHistory? history,
+  int Function()? ackStatus,
 }) {
   return EncryptedConversationService(
     api: ApiClient(
@@ -706,7 +1014,11 @@ EncryptedConversationService _service(
         if (request.url.path.endsWith('/ack')) {
           final parts = request.url.path.split('/');
           acks?.add(parts[parts.length - 2]);
-          return http.Response('', 204);
+          return http.Response('', ackStatus?.call() ?? 204);
+        }
+        if (request.method == 'POST' &&
+            request.url.path.endsWith('/envelopes')) {
+          return http.Response(jsonEncode(_sentJson()), 201);
         }
         return http.Response('no', 404);
       }),
@@ -714,7 +1026,196 @@ EncryptedConversationService _service(
     ),
     mls: MlsSessionManager(),
     engine: engine,
+    history: history ?? _MemoryHistory(),
   );
+}
+
+Future<LocalMessageStore> _openHistory(Directory dir) {
+  return LocalMessageStore.open(
+    userId: _me,
+    deviceId: _device,
+    dbPath: '${dir.path}${Platform.pathSeparator}messages.db',
+    storage: const FlutterSecureStorage(),
+    factory: databaseFactoryFfi,
+  );
+}
+
+Future<({ConversationController controller, void Function() dispose})>
+    _controller(EncryptedConversationService service) async {
+  final auth = AuthController(
+    store: _FakeSessionStore(),
+    validate: (_) async => AuthIdentity(
+      userId: _me,
+      deviceId: _device,
+      expiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
+    ),
+    revoke: (_) async {},
+  );
+  await auth.signIn(
+    AuthSession(
+      userId: _me,
+      deviceId: _device,
+      token: 'session-token',
+      expiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
+    ),
+  );
+  final controller = ConversationController(
+    api: service.api,
+    auth: auth,
+    mls: MlsSessionManager(),
+    peerUserId: _peer,
+    peerEmail: 'peer@example.com',
+    service: service,
+  );
+  return (
+    controller: controller,
+    dispose: () {
+      controller.dispose();
+      auth.dispose();
+    },
+  );
+}
+
+class _ReuseLeak implements Exception {
+  @override
+  String toString() => 'SecretReuseError: generation consumed';
+}
+
+class _MemoryHistory implements InboundMessageHistory {
+  final List<LocalMessageRecord> _rows = [];
+
+  @override
+  Future<LocalMessageRecord?> lookupByEnvelopeId(String envelopeId) async {
+    for (final row in _rows) {
+      if (row.envelopeId == envelopeId) return row;
+    }
+    return null;
+  }
+
+  @override
+  Future<List<LocalMessageRecord>> listConversation(
+    String conversationId,
+  ) async {
+    return _rows
+        .where((row) => row.conversationId == conversationId)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<LocalMessageRecord> insert(LocalMessageDraft draft) async {
+    final record = LocalMessageRecord(
+      ownerUserId: _me,
+      ownerDeviceId: _device,
+      conversationId: draft.conversationId,
+      senderId: draft.senderId,
+      clientMessageId: draft.clientMessageId,
+      envelopeId: draft.envelopeId,
+      conversationSeq: draft.conversationSeq,
+      createdAtRaw: draft.createdAt.toUtc().toIso8601String(),
+      delivery: draft.delivery,
+      mlsPhase: draft.mlsPhase,
+      plaintext: draft.plaintext,
+    );
+    _rows.add(record);
+    return record;
+  }
+
+  @override
+  Future<LocalMessageRecord> markInboundState({
+    required String conversationId,
+    required String clientMessageId,
+    LocalMlsPhase? mlsPhase,
+    LocalMessageDelivery? delivery,
+  }) async {
+    final index = _rows.indexWhere(
+      (row) =>
+          row.conversationId == conversationId &&
+          row.clientMessageId == clientMessageId,
+    );
+    if (index < 0) throw const MessageHistoryNotFoundException();
+    final current = _rows[index];
+    final updated = LocalMessageRecord(
+      ownerUserId: current.ownerUserId,
+      ownerDeviceId: current.ownerDeviceId,
+      conversationId: current.conversationId,
+      senderId: current.senderId,
+      clientMessageId: current.clientMessageId,
+      envelopeId: current.envelopeId,
+      conversationSeq: current.conversationSeq,
+      createdAtRaw: current.createdAtRaw,
+      delivery: delivery ?? current.delivery,
+      mlsPhase: mlsPhase ?? current.mlsPhase,
+      plaintext: current.plaintext,
+    );
+    _rows[index] = updated;
+    return updated;
+  }
+}
+
+class _FailOnCommit implements InboundMessageHistory {
+  _FailOnCommit(this.inner);
+
+  final InboundMessageHistory inner;
+
+  @override
+  Future<LocalMessageRecord?> lookupByEnvelopeId(String envelopeId) {
+    return inner.lookupByEnvelopeId(envelopeId);
+  }
+
+  @override
+  Future<List<LocalMessageRecord>> listConversation(String conversationId) {
+    return inner.listConversation(conversationId);
+  }
+
+  @override
+  Future<LocalMessageRecord> insert(LocalMessageDraft draft) {
+    return inner.insert(draft);
+  }
+
+  @override
+  Future<LocalMessageRecord> markInboundState({
+    required String conversationId,
+    required String clientMessageId,
+    LocalMlsPhase? mlsPhase,
+    LocalMessageDelivery? delivery,
+  }) {
+    if (mlsPhase == LocalMlsPhase.committed) {
+      throw StateError('commit marker failed');
+    }
+    return inner.markInboundState(
+      conversationId: conversationId,
+      clientMessageId: clientMessageId,
+      mlsPhase: mlsPhase,
+      delivery: delivery,
+    );
+  }
+}
+
+class _InsertFails implements InboundMessageHistory {
+  @override
+  Future<LocalMessageRecord?> lookupByEnvelopeId(String envelopeId) async =>
+      null;
+
+  @override
+  Future<List<LocalMessageRecord>> listConversation(
+    String conversationId,
+  ) async =>
+      const [];
+
+  @override
+  Future<LocalMessageRecord> insert(LocalMessageDraft draft) {
+    throw StateError('history write failed');
+  }
+
+  @override
+  Future<LocalMessageRecord> markInboundState({
+    required String conversationId,
+    required String clientMessageId,
+    LocalMlsPhase? mlsPhase,
+    LocalMessageDelivery? delivery,
+  }) {
+    throw const MessageHistoryNotFoundException();
+  }
 }
 
 MessageEnvelope _env(String id, int seq, String type, {String? sender}) {

@@ -59,6 +59,15 @@ abstract class MlsGroupEncryptionService implements EncryptionService {
     required List<int> messageBytes,
   });
 
+  /// Decrypts one application message without committing MLS state.
+  ///
+  /// Callers must use [processIncoming] on the same ciphertext to advance the
+  /// ratchet. This method is only for application messages.
+  Future<DecryptedApplicationMessage> inspectApplication({
+    required String groupIdHex,
+    required List<int> messageBytes,
+  });
+
   /// Current epoch of [groupIdHex], or null when this backend cannot read it.
   Future<BigInt?> groupEpoch({required String groupIdHex});
 
