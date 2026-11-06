@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'delivery_timing.dart';
+
 /// Authenticated WebSocket client with reconnect + backoff.
 ///
 /// Auth uses a post-connect handshake frame (never query-string tokens).
@@ -20,6 +22,7 @@ class RealtimeClient {
 
   final _events = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get events => _events.stream;
+  int _eventsWithoutListener = 0;
 
   final _revoked = StreamController<void>.broadcast();
   Stream<void> get sessionRevoked => _revoked.stream;
@@ -41,6 +44,7 @@ class RealtimeClient {
 
   Future<void> _connect() async {
     if (_stopped || _token == null) return;
+    DeliveryTiming.record('realtime_connect_attempt', _attempt);
     try {
       // No access_token in the URL (C3).
       final uri = wsBaseUri.replace(queryParameters: {});
@@ -60,7 +64,7 @@ class RealtimeClient {
             stop();
             return;
           }
-          _events.add(decoded);
+          _emit(decoded);
           _attempt = 0;
         },
         onDone: _scheduleReconnect,
@@ -77,10 +81,25 @@ class RealtimeClient {
     _reconnect?.cancel();
     final delay =
         Duration(milliseconds: (500 * (1 << _attempt.clamp(0, 5))).toInt());
+    DeliveryTiming.record('realtime_reconnect_wait', delay.inMilliseconds);
     _attempt++;
     _reconnect = Timer(delay, () {
       _connect();
     });
+  }
+
+  void _emit(Map<String, dynamic> event) {
+    final type = event['type'];
+    final detail = type is String ? type : 'unknown';
+    if (!_events.hasListener) {
+      _eventsWithoutListener++;
+      DeliveryTiming.record(
+        'realtime_event_without_listener',
+        _eventsWithoutListener,
+        detail: detail,
+      );
+    }
+    if (!_events.isClosed) _events.add(event);
   }
 
   Future<void> dispose() async {

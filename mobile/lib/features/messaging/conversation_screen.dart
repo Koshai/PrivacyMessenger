@@ -174,7 +174,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
           itemCount: _controller.messages.length,
           itemBuilder: (context, index) {
             final msg = _controller.messages[index];
-            return _MessageBubble(
+            return ChatMessageBubble(
               message: msg,
               onRetry: () => _controller.retry(msg.clientMessageId),
             );
@@ -190,8 +190,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 }
 
-class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message, required this.onRetry});
+class ChatMessageBubble extends StatelessWidget {
+  const ChatMessageBubble({
+    super.key,
+    required this.message,
+    required this.onRetry,
+  });
 
   final ChatMessageView message;
   final VoidCallback onRetry;
@@ -203,16 +207,10 @@ class _MessageBubble extends StatelessWidget {
     final color = message.isMine
         ? Theme.of(context).colorScheme.primaryContainer
         : Theme.of(context).colorScheme.surfaceContainerHighest;
-
-    String status;
-    switch (message.delivery) {
-      case ChatDeliveryState.sending:
-        status = 'Sending';
-      case ChatDeliveryState.sent:
-        status = 'Sent';
-      case ChatDeliveryState.failed:
-        status = 'Failed';
-    }
+    final status = deliveryStatusLabel(
+      delivery: message.delivery,
+      isMine: message.isMine,
+    );
 
     return Align(
       alignment: align,
@@ -239,11 +237,13 @@ class _MessageBubble extends StatelessWidget {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      status,
-                      style: Theme.of(context).textTheme.labelSmall,
-                    ),
-                    if (message.delivery == ChatDeliveryState.failed) ...[
+                    if (status != null)
+                      Text(
+                        status,
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                    if (message.isMine &&
+                        message.delivery == ChatDeliveryState.failed) ...[
                       const SizedBox(width: 8),
                       TextButton(
                         onPressed: onRetry,

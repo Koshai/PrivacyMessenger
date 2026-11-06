@@ -6,6 +6,7 @@ import '../../core/auth/auth_controller.dart';
 import '../../core/crypto/mls_session_manager.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/api_config.dart';
+import 'delivery_timing.dart';
 import 'encrypted_conversation_service.dart';
 import 'models/envelope.dart';
 import 'realtime_client.dart';
@@ -78,6 +79,7 @@ class ConversationController extends ChangeNotifier {
   final List<ChatMessageView> messages = [];
   StreamSubscription? _rtSub;
   bool _disposed = false;
+  int _syncDepth = 0;
 
   void _notify() {
     if (_disposed) return;
@@ -89,41 +91,63 @@ class ConversationController extends ChangeNotifier {
     errorMessage = null;
     _notify();
 
+    final openSpan = DeliveryTiming.start();
     try {
       await mls.ensureReady(auth);
+      openSpan.lap('open_ensure_ready');
       final token = await auth.sessionToken();
       if (token == null) throw StateError('No token');
 
       await _service.enrollDevice(token);
+      openSpan.lap('open_enroll');
       final info = await _service.openWithPeer(
         token: token,
         myUserId: auth.state.userId!,
         peerUserId: peerUserId,
       );
+      openSpan.lap('open_peer');
       conversationId = info.conversationId;
       _service.bindConversationPeer(info.conversationId, peerUserId);
 
       // Only pending deliveries are decrypted. Acknowledged history is not
       // replayed into OpenMLS.
       final pending = await api.syncPending(token: token);
+      openSpan.lap('open_sync_pending');
       final history = await api.listEnvelopes(
         token: token,
         conversationId: info.conversationId,
       );
+      openSpan.lap('open_list_envelopes');
       await _service.ingestEnvelopes(
         token: token,
         myUserId: auth.state.userId!,
         envelopes: selectEnvelopesForIngest(history: history, pending: pending),
       );
+      openSpan.lap('open_ingest');
       await restoreLocalHistory();
+      openSpan.lap('open_restore');
       keyChangeWarning = _service.keyChangeWarning;
 
       await _realtime.start(token);
-      _rtSub = _realtime.events.listen((_) => _syncNow());
+      openSpan.lap('open_realtime');
+      _rtSub = _realtime.events.listen((event) {
+        DeliveryTiming.record(
+          'realtime_event',
+          openSpan.elapsedMilliseconds,
+          detail: _eventType(event),
+        );
+        _syncNow();
+      });
+      DeliveryTiming.record(
+        'realtime_listener_attached',
+        openSpan.elapsedMilliseconds,
+      );
+      openSpan.total('open_total');
 
       loadState = ConversationLoadState.ready;
       offline = false;
     } catch (e) {
+      openSpan.total('open_failed');
       loadState = ConversationLoadState.error;
       offline = true;
       errorMessage = 'Unable to open secure conversation';
@@ -135,16 +159,26 @@ class ConversationController extends ChangeNotifier {
     final token = await auth.sessionToken();
     final cid = conversationId;
     if (token == null || cid == null) return;
+    final overlapped = _syncDepth > 0;
+    _syncDepth++;
+    final span = DeliveryTiming.start();
+    if (overlapped) {
+      DeliveryTiming.record('sync_overlap', _syncDepth);
+    }
     try {
       final pending = await api.syncPending(token: token);
+      span.lap('sync_pending_http');
       final mine = pending.where((e) => e.conversationId == cid).toList();
       await _service.ingestEnvelopes(
         token: token,
         myUserId: auth.state.userId!,
         envelopes: mine,
       );
+      span.lap('sync_ingest');
       final before = _transcriptKey();
       await restoreLocalHistory();
+      span.lap('sync_restore');
+      span.total('sync_total');
       final warning = _service.keyChangeWarning;
       final warningChanged = warning != null && warning != keyChangeWarning;
       if (warningChanged) keyChangeWarning = warning;
@@ -154,9 +188,18 @@ class ConversationController extends ChangeNotifier {
         _notify();
       }
     } catch (_) {
+      span.total('sync_failed');
       offline = true;
       _notify();
+    } finally {
+      _syncDepth--;
     }
+  }
+
+  String _eventType(Map<String, dynamic> event) {
+    final type = event['type'];
+    if (type is! String) return 'unknown';
+    return type;
   }
 
   /// Replaces the visible transcript with stored history, keeping outgoing rows.

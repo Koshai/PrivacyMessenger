@@ -505,6 +505,7 @@ void main() {
     );
     expect(views, hasLength(1));
     expect(views.single.plaintext, 'hi');
+    expect(views.single.delivery, ChatDeliveryState.received);
     expect(engine.inspectCalls, 1);
     expect(engine.processCalls, 1);
     expect(acks, ['a']);
@@ -664,6 +665,7 @@ void main() {
 
       expect(views, hasLength(1));
       expect(views.single.plaintext, 'hi');
+      expect(views.single.delivery, ChatDeliveryState.received);
       expect(engine.inspectCalls, 1);
       expect(engine.processCalls, 1);
       expect(acks, ['a']);
@@ -692,6 +694,10 @@ void main() {
       await first.controller.restoreLocalHistory();
       expect(first.controller.messages, hasLength(1));
       expect(first.controller.messages.single.plaintext, 'hi');
+      expect(
+        first.controller.messages.single.delivery,
+        ChatDeliveryState.received,
+      );
 
       final second = await _controller(service);
       addTearDown(second.dispose);

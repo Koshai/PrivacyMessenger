@@ -10,6 +10,7 @@ import '../../core/network/api_client.dart' show ApiClient, ApiException;
 import '../calling/call_auth.dart';
 import '../calling/call_auth_session.dart';
 import '../calling/call_binding_inbox.dart';
+import 'delivery_timing.dart';
 import 'local_message_store.dart';
 import 'models/envelope.dart';
 
@@ -174,14 +175,19 @@ class EncryptedConversationService {
   Future<void> enrollDevice(String token) async {
     final record = mls.record;
     if (record == null) throw StateError('MLS not ready');
+    final span = DeliveryTiming.start();
     await api.registerMlsIdentity(token: token, publicKey: record.publicKey);
+    span.lap('enroll_register_identity');
 
     final packages = <List<int>>[];
     for (var i = 0; i < 5; i++) {
       final kp = await mls.createKeyPackage();
       packages.add(kp.keyPackageBytes);
     }
+    span.lap('enroll_key_packages');
     await api.uploadKeyPackages(token: token, packages: packages);
+    span.lap('enroll_upload_key_packages');
+    span.total('enroll_total');
   }
 
   Future<ConversationInfo> openWithPeer({
@@ -264,6 +270,7 @@ class EncryptedConversationService {
       throw StateError('MLS group not ready for conversation');
     }
 
+    final span = DeliveryTiming.start();
     final pending = ChatMessageView(
       clientMessageId: clientMessageId,
       senderId: myUserId,
@@ -277,6 +284,7 @@ class EncryptedConversationService {
     final List<int> ciphertext;
     if (prepared != null) {
       ciphertext = prepared;
+      span.lap('send_encrypt_reused');
     } else {
       try {
         final wire = await svc.encryptApplication(
@@ -285,7 +293,9 @@ class EncryptedConversationService {
         );
         ciphertext = List<int>.from(wire.bytes);
         _preparedApplication[clientMessageId] = ciphertext;
+        span.lap('send_encrypt');
       } catch (error, stack) {
+        span.total('send_encrypt_failed');
         MlsDiagnostics.record(
           stage: 'encrypt_application',
           error: error,
@@ -309,11 +319,14 @@ class EncryptedConversationService {
           )
           .timeout(submitTimeout);
       _preparedApplication.remove(clientMessageId);
+      span.lap('send_submit');
+      span.total('send_total');
       return pending.copyWith(
         delivery: ChatDeliveryState.sent,
         serverEnvelopeId: envelope.id,
       );
     } catch (error) {
+      span.total('send_submit_failed');
       MlsDiagnostics.record(
         stage: 'send_envelope',
         error: error,
@@ -498,6 +511,7 @@ class EncryptedConversationService {
       );
     }
 
+    final span = DeliveryTiming.start();
     final existing = await stored.lookupByEnvelopeId(env.id);
     if (existing != null &&
         (existing.conversationId != env.conversationId ||
@@ -511,12 +525,15 @@ class EncryptedConversationService {
 
     if (existing?.mlsPhase == LocalMlsPhase.committed) {
       await _acknowledge(token, env);
+      span.lap('inbound_ack_stored');
       final received = await _markApplication(
         stored,
         conversationId: existing!.conversationId,
         clientMessageId: existing.clientMessageId,
         delivery: LocalMessageDelivery.received,
       );
+      span.lap('inbound_store_received');
+      span.total('inbound_total');
       out.add(_viewFromRecord(received, myUserId));
       return;
     }
@@ -529,8 +546,10 @@ class EncryptedConversationService {
           messageBytes: env.ciphertext,
         );
       } catch (error) {
+        span.total('inbound_inspect_failed');
         throw _MlsIngestSignal('application_inspect', error);
       }
+      span.lap('inbound_inspect');
       final String plaintext;
       try {
         plaintext = utf8.decode(inspected.plaintext);
@@ -555,8 +574,10 @@ class EncryptedConversationService {
           ),
         );
       } catch (error) {
+        span.total('inbound_store_failed');
         throw _MlsIngestSignal('application_history', error);
       }
+      span.lap('inbound_store_inspected');
     }
 
     final DecryptedApplicationMessage? decrypted;
@@ -566,8 +587,10 @@ class EncryptedConversationService {
         messageBytes: env.ciphertext,
       );
     } catch (error) {
+      span.total('inbound_process_failed');
       throw _MlsIngestSignal('application_decrypt', error);
     }
+    span.lap('inbound_process');
     if (decrypted == null) {
       throw _MlsIngestSignal(
         'application_decrypt',
@@ -583,13 +606,17 @@ class EncryptedConversationService {
       clientMessageId: clientMessageId,
       mlsPhase: LocalMlsPhase.committed,
     );
+    span.lap('inbound_store_committed');
     await _acknowledge(token, env);
+    span.lap('inbound_ack');
     final received = await _markApplication(
       stored,
       conversationId: conversationId,
       clientMessageId: clientMessageId,
       delivery: LocalMessageDelivery.received,
     );
+    span.lap('inbound_store_received');
+    span.total('inbound_total');
     out.add(_viewFromRecord(received, myUserId));
   }
 
@@ -631,8 +658,9 @@ class EncryptedConversationService {
       case LocalMessageDelivery.failed:
         return ChatDeliveryState.failed;
       case LocalMessageDelivery.sent:
-      case LocalMessageDelivery.received:
         return ChatDeliveryState.sent;
+      case LocalMessageDelivery.received:
+        return ChatDeliveryState.received;
     }
   }
 
