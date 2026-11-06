@@ -8,6 +8,7 @@ import '../calling/models/call_session.dart';
 import 'conversation_controller.dart';
 import 'encrypted_conversation_service.dart';
 import 'models/envelope.dart';
+import 'realtime_client.dart';
 
 class ConversationScreen extends StatefulWidget {
   const ConversationScreen({
@@ -19,6 +20,7 @@ class ConversationScreen extends StatefulWidget {
     required this.peerEmail,
     this.messaging,
     this.callController,
+    this.realtime,
   });
 
   final ApiClient apiClient;
@@ -28,6 +30,7 @@ class ConversationScreen extends StatefulWidget {
   final String peerEmail;
   final EncryptedConversationService? messaging;
   final CallController? callController;
+  final RealtimeClient? realtime;
 
   @override
   State<ConversationScreen> createState() => _ConversationScreenState();
@@ -48,6 +51,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
       peerUserId: widget.peerUserId,
       peerEmail: widget.peerEmail,
       service: widget.messaging,
+      realtime: widget.realtime,
+      ownRealtime: widget.realtime == null,
     )..open();
   }
 

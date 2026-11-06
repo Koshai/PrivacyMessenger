@@ -345,6 +345,7 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
         mls: widget.mls,
         messaging: messaging,
         callController: _calls,
+        realtime: _realtime,
       ),
     );
   }
@@ -357,6 +358,7 @@ class MainNavigation extends StatefulWidget {
   final MlsSessionManager? mls;
   final EncryptedConversationService? messaging;
   final CallController? callController;
+  final RealtimeClient? realtime;
 
   const MainNavigation({
     super.key,
@@ -366,6 +368,7 @@ class MainNavigation extends StatefulWidget {
     this.mls,
     this.messaging,
     this.callController,
+    this.realtime,
   });
 
   @override
@@ -384,6 +387,7 @@ class _MainNavigationState extends State<MainNavigation> {
         mls: widget.mls,
         messaging: widget.messaging,
         callController: widget.callController,
+        realtime: widget.realtime,
       ),
       FriendsScreen(
         apiClient: widget.apiClient,

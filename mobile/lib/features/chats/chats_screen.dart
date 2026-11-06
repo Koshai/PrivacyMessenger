@@ -7,6 +7,7 @@ import '../../features/friends/models/friend.dart';
 import '../calling/call_controller.dart';
 import '../messaging/conversation_screen.dart';
 import '../messaging/encrypted_conversation_service.dart';
+import '../messaging/realtime_client.dart';
 
 class ChatsScreen extends StatefulWidget {
   const ChatsScreen({
@@ -16,6 +17,7 @@ class ChatsScreen extends StatefulWidget {
     this.mls,
     this.messaging,
     this.callController,
+    this.realtime,
   });
 
   final ApiClient? apiClient;
@@ -23,6 +25,7 @@ class ChatsScreen extends StatefulWidget {
   final MlsSessionManager? mls;
   final EncryptedConversationService? messaging;
   final CallController? callController;
+  final RealtimeClient? realtime;
 
   @override
   State<ChatsScreen> createState() => _ChatsScreenState();
@@ -157,6 +160,7 @@ class _ChatsScreenState extends State<ChatsScreen> {
                   peerEmail: friend.email,
                   messaging: widget.messaging,
                   callController: widget.callController,
+                  realtime: widget.realtime,
                 ),
               ),
             );

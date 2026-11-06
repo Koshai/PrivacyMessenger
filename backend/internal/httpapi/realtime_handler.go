@@ -21,6 +21,13 @@ const (
 	wsHandshakeTimeout  = 10 * time.Second
 )
 
+// Overridable in tests. Ping requires a concurrent Reader (CloseRead).
+var (
+	wsPingInterval = 20 * time.Second
+	wsPingTimeout  = 5 * time.Second
+	wsReauthEvery  = 30 * time.Second
+)
+
 type RealtimeHandler struct {
 	hub  *realtime.Hub
 	auth SessionAuthenticator
@@ -83,15 +90,22 @@ func (h *RealtimeHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ping := time.NewTicker(20 * time.Second)
+	// Clients send no data frames after auth. CloseRead keeps a Reader
+	// alive so Ping can observe pongs. Without this, coder/websocket
+	// Ping waits forever for a Reader and times out, dropping the socket.
+	closeReadCtx := conn.CloseRead(ctx)
+
+	ping := time.NewTicker(wsPingInterval)
 	defer ping.Stop()
-	reauth := time.NewTicker(30 * time.Second)
+	reauth := time.NewTicker(wsReauthEvery)
 	defer reauth.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			_ = conn.Close(websocket.StatusGoingAway, "done")
+			return
+		case <-closeReadCtx.Done():
 			return
 		case reason := <-closed:
 			payload, _ := realtime.EncodeEvent(realtime.Event{Type: "session_revoked", Reason: reason})
@@ -106,7 +120,7 @@ func (h *RealtimeHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-ping.C:
-			pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			pingCtx, cancel := context.WithTimeout(ctx, wsPingTimeout)
 			err := conn.Ping(pingCtx)
 			cancel()
 			if err != nil {

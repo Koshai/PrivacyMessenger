@@ -150,6 +150,7 @@ class EncryptedConversationService {
   final Map<String, List<int>> _preparedApplication = {};
   final Set<String> _unresolvedEnvelopeIds = {};
   Future<void> _chain = Future<void>.value();
+  bool _deviceEnrolled = false;
 
   String? keyChangeWarning;
 
@@ -173,6 +174,10 @@ class EncryptedConversationService {
   }
 
   Future<void> enrollDevice(String token) async {
+    if (_deviceEnrolled) {
+      DeliveryTiming.record('enroll_skipped', 0);
+      return;
+    }
     final record = mls.record;
     if (record == null) throw StateError('MLS not ready');
     final span = DeliveryTiming.start();
@@ -188,6 +193,7 @@ class EncryptedConversationService {
     await api.uploadKeyPackages(token: token, packages: packages);
     span.lap('enroll_upload_key_packages');
     span.total('enroll_total');
+    _deviceEnrolled = true;
   }
 
   Future<ConversationInfo> openWithPeer({
@@ -262,6 +268,7 @@ class EncryptedConversationService {
     required String myUserId,
     required String plaintext,
     required String clientMessageId,
+    DateTime? createdAt,
   }) async {
     final svc = _crypto;
     if (svc == null) throw StateError('MLS not ready');
@@ -271,14 +278,34 @@ class EncryptedConversationService {
     }
 
     final span = DeliveryTiming.start();
+    final stamped = (createdAt ?? DateTime.now().toUtc()).toUtc();
     final pending = ChatMessageView(
       clientMessageId: clientMessageId,
       senderId: myUserId,
       plaintext: plaintext,
-      createdAt: DateTime.now().toUtc(),
+      createdAt: stamped,
       delivery: ChatDeliveryState.sending,
       isMine: true,
     );
+
+    try {
+      await _persistOutgoing(
+        conversationId: conversationId,
+        myUserId: myUserId,
+        clientMessageId: clientMessageId,
+        plaintext: plaintext,
+        createdAt: stamped,
+        delivery: LocalMessageDelivery.sending,
+      );
+      span.lap('send_store_sending');
+    } catch (error) {
+      span.total('send_store_failed');
+      MlsDiagnostics.record(stage: 'send_history', error: error);
+      return pending.copyWith(
+        delivery: ChatDeliveryState.failed,
+        error: 'Message could not be saved.',
+      );
+    }
 
     final prepared = _preparedApplication[clientMessageId];
     final List<int> ciphertext;
@@ -296,6 +323,11 @@ class EncryptedConversationService {
         span.lap('send_encrypt');
       } catch (error, stack) {
         span.total('send_encrypt_failed');
+        await _markOutgoing(
+          conversationId: conversationId,
+          clientMessageId: clientMessageId,
+          delivery: LocalMessageDelivery.failed,
+        );
         MlsDiagnostics.record(
           stage: 'encrypt_application',
           error: error,
@@ -320,13 +352,47 @@ class EncryptedConversationService {
           .timeout(submitTimeout);
       _preparedApplication.remove(clientMessageId);
       span.lap('send_submit');
+      final stored = await _markOutgoing(
+        conversationId: conversationId,
+        clientMessageId: clientMessageId,
+        delivery: LocalMessageDelivery.sent,
+        envelopeId: envelope.id,
+        conversationSeq: envelope.conversationSeq,
+      );
+      span.lap('send_store_sent');
       span.total('send_total');
-      return pending.copyWith(
+      return ChatMessageView(
+        clientMessageId: clientMessageId,
+        serverEnvelopeId: stored?.envelopeId ?? envelope.id,
+        senderId: myUserId,
+        plaintext: plaintext,
+        createdAt: stamped,
         delivery: ChatDeliveryState.sent,
-        serverEnvelopeId: envelope.id,
+        isMine: true,
+      );
+    } on TimeoutException catch (error) {
+      // Ambiguous: the HTTP write may have landed. Keep prepared ciphertext
+      // only in memory for an explicit same-session retry. Do not claim Sent.
+      span.total('send_submit_timeout');
+      await _markOutgoing(
+        conversationId: conversationId,
+        clientMessageId: clientMessageId,
+        delivery: LocalMessageDelivery.failed,
+      );
+      MlsDiagnostics.record(stage: 'send_envelope', error: error);
+      return pending.copyWith(
+        delivery: ChatDeliveryState.failed,
+        error: 'Send timed out. Retry may resubmit.',
       );
     } catch (error) {
       span.total('send_submit_failed');
+      // Keep prepared ciphertext in memory for an explicit same-session retry.
+      // Process restart drops it; do not invent durable ciphertext persistence.
+      await _markOutgoing(
+        conversationId: conversationId,
+        clientMessageId: clientMessageId,
+        delivery: LocalMessageDelivery.failed,
+      );
       MlsDiagnostics.record(
         stage: 'send_envelope',
         error: error,
@@ -335,6 +401,72 @@ class EncryptedConversationService {
         delivery: ChatDeliveryState.failed,
         error: 'Send failed',
       );
+    }
+  }
+
+  Future<void> _persistOutgoing({
+    required String conversationId,
+    required String myUserId,
+    required String clientMessageId,
+    required String plaintext,
+    required DateTime createdAt,
+    required LocalMessageDelivery delivery,
+  }) async {
+    final stored = history;
+    if (stored == null) {
+      throw StateError('history unavailable');
+    }
+    final existing = await stored.lookupByClientMessageId(
+      conversationId: conversationId,
+      clientMessageId: clientMessageId,
+    );
+    if (existing != null) {
+      if (existing.plaintext != plaintext || existing.senderId != myUserId) {
+        throw const MessageHistoryConflictException();
+      }
+      if (existing.delivery == LocalMessageDelivery.sent ||
+          existing.delivery == LocalMessageDelivery.received) {
+        return;
+      }
+      await stored.markInboundState(
+        conversationId: conversationId,
+        clientMessageId: clientMessageId,
+        delivery: delivery,
+      );
+      return;
+    }
+    await stored.insert(
+      LocalMessageDraft(
+        conversationId: conversationId,
+        senderId: myUserId,
+        clientMessageId: clientMessageId,
+        createdAt: createdAt,
+        delivery: delivery,
+        plaintext: plaintext,
+      ),
+    );
+  }
+
+  Future<LocalMessageRecord?> _markOutgoing({
+    required String conversationId,
+    required String clientMessageId,
+    LocalMessageDelivery? delivery,
+    Object? envelopeId = keepHistoryField,
+    Object? conversationSeq = keepHistoryField,
+  }) async {
+    final stored = history;
+    if (stored == null) return null;
+    try {
+      return await stored.markInboundState(
+        conversationId: conversationId,
+        clientMessageId: clientMessageId,
+        delivery: delivery,
+        envelopeId: envelopeId,
+        conversationSeq: conversationSeq,
+      );
+    } catch (error) {
+      MlsDiagnostics.record(stage: 'send_history', error: error);
+      return null;
     }
   }
 

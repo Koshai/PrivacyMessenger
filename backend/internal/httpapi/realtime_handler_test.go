@@ -96,3 +96,66 @@ func TestRealtimeHandshakeAuthAndRevoke(t *testing.T) {
 		t.Fatalf("unexpected event %#v", evt)
 	}
 }
+
+func TestRealtimePingSurvivesWithoutClientDataFrames(t *testing.T) {
+	prevInterval := wsPingInterval
+	prevTimeout := wsPingTimeout
+	wsPingInterval = 150 * time.Millisecond
+	wsPingTimeout = time.Second
+	t.Cleanup(func() {
+		wsPingInterval = prevInterval
+		wsPingTimeout = prevTimeout
+	})
+
+	hub := realtime.NewHub()
+	userID := uuid.New()
+	deviceID := uuid.New()
+	handler := NewRealtimeHandler(hub, &fakeWSAuth{
+		session: auth.AuthenticatedSession{
+			UserID:    userID,
+			DeviceID:  deviceID,
+			ExpiresAt: time.Now().Add(time.Hour),
+		},
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(handler.ServeWS))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	authFrame, _ := json.Marshal(map[string]string{"type": "auth", "token": "tok"})
+	if err := conn.Write(ctx, websocket.MessageText, authFrame); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := conn.Read(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait through several server ping cycles. Without CloseRead the server
+	// would time out waiting for a pong and drop the connection.
+	time.Sleep(700 * time.Millisecond)
+
+	conversationID := uuid.New()
+	envelopeID := uuid.New()
+	handler.NotifyEnvelope(userID, conversationID, envelopeID)
+
+	_, payload, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("connection died before envelope delivery: %v", err)
+	}
+	var evt map[string]any
+	if err := json.Unmarshal(payload, &evt); err != nil {
+		t.Fatal(err)
+	}
+	if evt["type"] != "envelope" {
+		t.Fatalf("expected envelope after pings, got %#v", evt)
+	}
+}

@@ -262,15 +262,23 @@ class LocalMessageStore implements InboundMessageHistory {
     required String clientMessageId,
     LocalMlsPhase? mlsPhase,
     LocalMessageDelivery? delivery,
+    Object? envelopeId = keepHistoryField,
+    Object? conversationSeq = keepHistoryField,
   }) {
     return update(
       conversationId: conversationId,
       clientMessageId: clientMessageId,
       delivery: delivery,
       mlsPhase: mlsPhase ?? _unchanged,
+      envelopeId:
+          identical(envelopeId, keepHistoryField) ? _unchanged : envelopeId,
+      conversationSeq: identical(conversationSeq, keepHistoryField)
+          ? _unchanged
+          : conversationSeq,
     );
   }
 
+  @override
   Future<LocalMessageRecord?> lookupByClientMessageId({
     required String conversationId,
     required String clientMessageId,
@@ -944,6 +952,11 @@ enum LocalMlsPhase { inspected, committed }
 /// Reads and writes used by inbound history. Implementations must not open
 /// the OpenMLS database.
 abstract interface class InboundMessageHistory {
+  Future<LocalMessageRecord?> lookupByClientMessageId({
+    required String conversationId,
+    required String clientMessageId,
+  });
+
   Future<LocalMessageRecord?> lookupByEnvelopeId(String envelopeId);
 
   Future<List<LocalMessageRecord>> listConversation(String conversationId);
@@ -955,8 +968,13 @@ abstract interface class InboundMessageHistory {
     required String clientMessageId,
     LocalMlsPhase? mlsPhase,
     LocalMessageDelivery? delivery,
+    Object? envelopeId = keepHistoryField,
+    Object? conversationSeq = keepHistoryField,
   });
 }
+
+/// Sentinel for history updates that should leave a field unchanged.
+const Object keepHistoryField = Object();
 
 /// Plaintext message returned by the store. [toString] omits the plaintext.
 class LocalMessageRecord {

@@ -53,6 +53,7 @@ class ConversationController extends ChangeNotifier {
     required this.peerEmail,
     EncryptedConversationService? service,
     RealtimeClient? realtime,
+    bool ownRealtime = true,
   })  : _service = service ??
             EncryptedConversationService(api: api, mls: mls),
         _realtime = realtime ??
@@ -61,7 +62,8 @@ class ConversationController extends ChangeNotifier {
                 scheme: ApiConfig.baseUri.scheme == 'https' ? 'wss' : 'ws',
                 path: '/realtime/ws',
               ),
-            );
+            ),
+        _ownRealtime = realtime == null ? true : ownRealtime;
 
   final ApiClient api;
   final AuthController auth;
@@ -70,6 +72,7 @@ class ConversationController extends ChangeNotifier {
   final String peerEmail;
   final EncryptedConversationService _service;
   final RealtimeClient _realtime;
+  final bool _ownRealtime;
 
   ConversationLoadState loadState = ConversationLoadState.idle;
   String? errorMessage;
@@ -79,7 +82,7 @@ class ConversationController extends ChangeNotifier {
   final List<ChatMessageView> messages = [];
   StreamSubscription? _rtSub;
   bool _disposed = false;
-  int _syncDepth = 0;
+  Future<void> _syncChain = Future<void>.value();
 
   void _notify() {
     if (_disposed) return;
@@ -93,10 +96,16 @@ class ConversationController extends ChangeNotifier {
 
     final openSpan = DeliveryTiming.start();
     try {
-      await mls.ensureReady(auth);
-      openSpan.lap('open_ensure_ready');
       final token = await auth.sessionToken();
       if (token == null) throw StateError('No token');
+
+      // Attach the listener before enrollment/network work so envelope
+      // hints are not dropped from the broadcast stream.
+      await _attachRealtime(token);
+      openSpan.lap('open_realtime');
+
+      await mls.ensureReady(auth);
+      openSpan.lap('open_ensure_ready');
 
       await _service.enrollDevice(token);
       openSpan.lap('open_enroll');
@@ -108,6 +117,11 @@ class ConversationController extends ChangeNotifier {
       openSpan.lap('open_peer');
       conversationId = info.conversationId;
       _service.bindConversationPeer(info.conversationId, peerUserId);
+
+      // Show durable history before network ingest so reopen feels instant.
+      await restoreLocalHistory();
+      openSpan.lap('open_restore_early');
+      _notify();
 
       // Only pending deliveries are decrypted. Acknowledged history is not
       // replayed into OpenMLS.
@@ -127,21 +141,6 @@ class ConversationController extends ChangeNotifier {
       await restoreLocalHistory();
       openSpan.lap('open_restore');
       keyChangeWarning = _service.keyChangeWarning;
-
-      await _realtime.start(token);
-      openSpan.lap('open_realtime');
-      _rtSub = _realtime.events.listen((event) {
-        DeliveryTiming.record(
-          'realtime_event',
-          openSpan.elapsedMilliseconds,
-          detail: _eventType(event),
-        );
-        _syncNow();
-      });
-      DeliveryTiming.record(
-        'realtime_listener_attached',
-        openSpan.elapsedMilliseconds,
-      );
       openSpan.total('open_total');
 
       loadState = ConversationLoadState.ready;
@@ -155,16 +154,35 @@ class ConversationController extends ChangeNotifier {
     _notify();
   }
 
-  Future<void> _syncNow() async {
+  Future<void> _attachRealtime(String token) async {
+    await _rtSub?.cancel();
+    _rtSub = _realtime.events.listen((event) {
+      final type = _eventType(event);
+      DeliveryTiming.record('realtime_event', 0, detail: type);
+      if (type == 'connected' ||
+          type == 'envelope' ||
+          type == 'client_reconnecting') {
+        DeliveryTiming.record('sync_trigger', 0, detail: type);
+        unawaited(_syncNow());
+      }
+    });
+    DeliveryTiming.record('realtime_listener_attached', 0);
+    if (!_realtime.isStarted) {
+      await _realtime.start(token);
+    }
+  }
+
+  Future<void> _syncNow() {
+    final result = _syncChain.then((_) => _runSync());
+    _syncChain = result.catchError((_) {});
+    return result;
+  }
+
+  Future<void> _runSync() async {
     final token = await auth.sessionToken();
     final cid = conversationId;
-    if (token == null || cid == null) return;
-    final overlapped = _syncDepth > 0;
-    _syncDepth++;
+    if (token == null || cid == null || _disposed) return;
     final span = DeliveryTiming.start();
-    if (overlapped) {
-      DeliveryTiming.record('sync_overlap', _syncDepth);
-    }
     try {
       final pending = await api.syncPending(token: token);
       span.lap('sync_pending_http');
@@ -191,8 +209,6 @@ class ConversationController extends ChangeNotifier {
       span.total('sync_failed');
       offline = true;
       _notify();
-    } finally {
-      _syncDepth--;
     }
   }
 
@@ -202,7 +218,7 @@ class ConversationController extends ChangeNotifier {
     return type;
   }
 
-  /// Replaces the visible transcript with stored history, keeping outgoing rows.
+  /// Replaces the visible transcript with stored history, keeping in-flight rows.
   @visibleForTesting
   Future<void> restoreLocalHistory() async {
     final cid = conversationId;
@@ -212,11 +228,21 @@ class ConversationController extends ChangeNotifier {
       conversationId: cid,
       myUserId: userId,
     );
-    final outgoing = messages.where((message) => message.isMine).toList();
+    final inFlight = messages
+        .where(
+          (message) =>
+              message.delivery == ChatDeliveryState.sending ||
+              (message.isMine &&
+                  message.delivery == ChatDeliveryState.failed &&
+                  !stored.any(
+                    (row) => row.clientMessageId == message.clientMessageId,
+                  )),
+        )
+        .toList();
     messages
       ..clear()
       ..addAll(stored);
-    for (final message in outgoing) {
+    for (final message in inFlight) {
       final kept = messages.any(
         (existing) => existing.clientMessageId == message.clientMessageId,
       );
@@ -273,6 +299,7 @@ class ConversationController extends ChangeNotifier {
         myUserId: userId,
         plaintext: trimmed,
         clientMessageId: clientId,
+        createdAt: optimistic.createdAt,
       );
     } catch (error, stack) {
       if (_disposed) return;
@@ -287,21 +314,45 @@ class ConversationController extends ChangeNotifier {
           includeStack: true,
         );
       }
-      final failed = optimistic.copyWith(
+      await restoreLocalHistory();
+      _applySendResult(
+        clientId: clientId,
         delivery: ChatDeliveryState.failed,
         error: 'Message could not be sent.',
       );
-      final idx = messages.indexWhere((m) => m.clientMessageId == clientId);
-      if (idx >= 0) messages[idx] = failed;
       _notify();
       return;
     }
     if (_disposed) return;
+    await restoreLocalHistory();
+    _applySendResult(
+      clientId: clientId,
+      delivery: result.delivery,
+      serverEnvelopeId: result.serverEnvelopeId,
+      error: result.error,
+    );
+    _notify();
+  }
+
+  void _applySendResult({
+    required String clientId,
+    required ChatDeliveryState delivery,
+    String? serverEnvelopeId,
+    String? error,
+  }) {
     final idx = messages.indexWhere((m) => m.clientMessageId == clientId);
-    if (idx >= 0) {
-      messages[idx] = result;
-      _notify();
-    }
+    if (idx < 0) return;
+    final current = messages[idx];
+    messages[idx] = ChatMessageView(
+      clientMessageId: current.clientMessageId,
+      serverEnvelopeId: serverEnvelopeId ?? current.serverEnvelopeId,
+      senderId: current.senderId,
+      plaintext: current.plaintext,
+      createdAt: current.createdAt,
+      delivery: delivery,
+      isMine: current.isMine,
+      error: error,
+    );
   }
 
   void dismissKeyChangeWarning() {
@@ -315,6 +366,8 @@ class ConversationController extends ChangeNotifier {
     if (idx < 0) return;
     final existing = messages[idx];
     if (existing.delivery != ChatDeliveryState.failed) return;
+    // Explicit user retry only. After process restart there is no durable
+    // prepared ciphertext; a new encrypt may be used with the same client id.
     await send(existing.plaintext, clientMessageId: clientMessageId);
   }
 
@@ -322,7 +375,10 @@ class ConversationController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _rtSub?.cancel();
-    _realtime.dispose();
+    _rtSub = null;
+    if (_ownRealtime) {
+      _realtime.dispose();
+    }
     super.dispose();
   }
 }

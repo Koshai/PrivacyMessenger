@@ -903,7 +903,7 @@ void main() {
       expect(engine.processCalls, 0);
     });
 
-    test('sending does not write local history', () async {
+    test('sending persists outgoing history as Sent', () async {
       final store = await _openHistory(tempDir);
       addTearDown(store.close);
       final engine = _ScriptedMls();
@@ -920,7 +920,85 @@ void main() {
       expect(engine.encryptCalls, 1);
       expect(engine.inspectCalls, 0);
       expect(engine.processCalls, 0);
-      expect(await store.listConversation(_conv), isEmpty);
+      final rows = await store.listConversation(_conv);
+      expect(rows, hasLength(1));
+      expect(rows.single.plaintext, 'outgoing');
+      expect(rows.single.delivery, LocalMessageDelivery.sent);
+      expect(rows.single.senderId, _me);
+      expect(rows.single.mlsPhase, isNull);
+    });
+
+    test('outgoing history survives a new controller restore', () async {
+      final store = await _openHistory(tempDir);
+      addTearDown(store.close);
+      final engine = _ScriptedMls();
+      final service = _service(engine, history: store);
+      service.rememberGroup(_conv, 'abc');
+      await service.sendText(
+        token: 'tok',
+        conversationId: _conv,
+        myUserId: _me,
+        plaintext: 'keep-me',
+        clientMessageId: 'out-keep',
+      );
+      final restored = await _controller(service);
+      addTearDown(restored.dispose);
+      restored.controller.conversationId = _conv;
+      await restored.controller.restoreLocalHistory();
+      expect(restored.controller.messages, hasLength(1));
+      expect(restored.controller.messages.single.plaintext, 'keep-me');
+      expect(restored.controller.messages.single.isMine, isTrue);
+      expect(
+        restored.controller.messages.single.delivery,
+        ChatDeliveryState.sent,
+      );
+    });
+
+    test('local store failure does not claim Sent', () async {
+      final engine = _ScriptedMls();
+      final service = _service(engine, history: _InsertFails());
+      service.rememberGroup(_conv, 'abc');
+      final failed = await service.sendText(
+        token: 'tok',
+        conversationId: _conv,
+        myUserId: _me,
+        plaintext: 'blocked',
+        clientMessageId: 'out-fail-store',
+      );
+      expect(failed.delivery, ChatDeliveryState.failed);
+      expect(engine.encryptCalls, 0);
+    });
+
+    test('HTTP send failure keeps Failed in local history', () async {
+      final store = await _openHistory(tempDir);
+      addTearDown(store.close);
+      final engine = _ScriptedMls();
+      final service = EncryptedConversationService(
+        api: ApiClient(
+          client: MockClient((request) async {
+            if (request.method == 'POST' &&
+                request.url.path.endsWith('/envelopes')) {
+              return http.Response('no', 500);
+            }
+            return http.Response('no', 404);
+          }),
+          baseUri: Uri.parse('http://example.test'),
+        ),
+        mls: MlsSessionManager(),
+        engine: engine,
+        history: store,
+      )..rememberGroup(_conv, 'abc');
+      final failed = await service.sendText(
+        token: 'tok',
+        conversationId: _conv,
+        myUserId: _me,
+        plaintext: 'retry-later',
+        clientMessageId: 'out-http-fail',
+      );
+      expect(failed.delivery, ChatDeliveryState.failed);
+      final row = (await store.listConversation(_conv)).single;
+      expect(row.delivery, LocalMessageDelivery.failed);
+      expect(row.plaintext, 'retry-later');
     });
   });
 }
@@ -987,6 +1065,7 @@ Future<_Harness> _harness({
     api: api,
     mls: MlsSessionManager(),
     engine: engine,
+    history: _MemoryHistory(),
   )..rememberGroup(_conv, 'abc');
   final controller = ConversationController(
     api: api,
@@ -1091,6 +1170,20 @@ class _MemoryHistory implements InboundMessageHistory {
   final List<LocalMessageRecord> _rows = [];
 
   @override
+  Future<LocalMessageRecord?> lookupByClientMessageId({
+    required String conversationId,
+    required String clientMessageId,
+  }) async {
+    for (final row in _rows) {
+      if (row.conversationId == conversationId &&
+          row.clientMessageId == clientMessageId) {
+        return row;
+      }
+    }
+    return null;
+  }
+
+  @override
   Future<LocalMessageRecord?> lookupByEnvelopeId(String envelopeId) async {
     for (final row in _rows) {
       if (row.envelopeId == envelopeId) return row;
@@ -1132,6 +1225,8 @@ class _MemoryHistory implements InboundMessageHistory {
     required String clientMessageId,
     LocalMlsPhase? mlsPhase,
     LocalMessageDelivery? delivery,
+    Object? envelopeId = keepHistoryField,
+    Object? conversationSeq = keepHistoryField,
   }) async {
     final index = _rows.indexWhere(
       (row) =>
@@ -1146,8 +1241,12 @@ class _MemoryHistory implements InboundMessageHistory {
       conversationId: current.conversationId,
       senderId: current.senderId,
       clientMessageId: current.clientMessageId,
-      envelopeId: current.envelopeId,
-      conversationSeq: current.conversationSeq,
+      envelopeId: identical(envelopeId, keepHistoryField)
+          ? current.envelopeId
+          : envelopeId as String?,
+      conversationSeq: identical(conversationSeq, keepHistoryField)
+          ? current.conversationSeq
+          : conversationSeq as int?,
       createdAtRaw: current.createdAtRaw,
       delivery: delivery ?? current.delivery,
       mlsPhase: mlsPhase ?? current.mlsPhase,
@@ -1162,6 +1261,17 @@ class _FailOnCommit implements InboundMessageHistory {
   _FailOnCommit(this.inner);
 
   final InboundMessageHistory inner;
+
+  @override
+  Future<LocalMessageRecord?> lookupByClientMessageId({
+    required String conversationId,
+    required String clientMessageId,
+  }) {
+    return inner.lookupByClientMessageId(
+      conversationId: conversationId,
+      clientMessageId: clientMessageId,
+    );
+  }
 
   @override
   Future<LocalMessageRecord?> lookupByEnvelopeId(String envelopeId) {
@@ -1184,6 +1294,8 @@ class _FailOnCommit implements InboundMessageHistory {
     required String clientMessageId,
     LocalMlsPhase? mlsPhase,
     LocalMessageDelivery? delivery,
+    Object? envelopeId = keepHistoryField,
+    Object? conversationSeq = keepHistoryField,
   }) {
     if (mlsPhase == LocalMlsPhase.committed) {
       throw StateError('commit marker failed');
@@ -1193,11 +1305,20 @@ class _FailOnCommit implements InboundMessageHistory {
       clientMessageId: clientMessageId,
       mlsPhase: mlsPhase,
       delivery: delivery,
+      envelopeId: envelopeId,
+      conversationSeq: conversationSeq,
     );
   }
 }
 
 class _InsertFails implements InboundMessageHistory {
+  @override
+  Future<LocalMessageRecord?> lookupByClientMessageId({
+    required String conversationId,
+    required String clientMessageId,
+  }) async =>
+      null;
+
   @override
   Future<LocalMessageRecord?> lookupByEnvelopeId(String envelopeId) async =>
       null;
@@ -1219,6 +1340,8 @@ class _InsertFails implements InboundMessageHistory {
     required String clientMessageId,
     LocalMlsPhase? mlsPhase,
     LocalMessageDelivery? delivery,
+    Object? envelopeId = keepHistoryField,
+    Object? conversationSeq = keepHistoryField,
   }) {
     throw const MessageHistoryNotFoundException();
   }
