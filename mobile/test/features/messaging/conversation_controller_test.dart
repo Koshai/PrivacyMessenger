@@ -35,31 +35,47 @@ void main() {
     expect(env.contentType, 'application/mls-message');
   });
 
-  test('acknowledged handshake history is not selected for ingest', () {
+  test('acknowledged history is not selected for ingest', () {
     final welcome = _env('w', 1, 'application/mls-welcome');
     final commit = _env('c', 2, 'application/mls-commit');
     final proposal = _env('p', 3, 'application/mls-proposal');
     final old = _env('a', 4, 'application/mls-message');
+    final binding = _env('k', 6, 'application/call-key-binding');
     final pendingApp = _env('b', 5, 'application/mls-message');
 
     final selected = selectEnvelopesForIngest(
-      history: [pendingApp, old, proposal, commit, welcome],
-      pending: [welcome, pendingApp],
+      history: [binding, pendingApp, old, proposal, commit, welcome],
+      pending: [pendingApp, welcome],
     );
 
-    expect(selected.map((e) => e.id), ['b', 'a', 'w']);
+    expect(selected.map((envelope) => envelope.id), ['w', 'b']);
   });
 
-  test('reopening without pending handshake does not select Welcome or Commit', () {
+  test('pending MLS envelopes are ordered by conversation sequence', () {
+    final welcome = _env('w', 1, 'application/mls-welcome');
+    final commit = _env('c', 2, 'application/mls-commit');
+    final application = _env('m', 4, 'application/mls-message');
+    final acked = _env('old', 3, 'application/mls-message');
+
+    final selected = selectEnvelopesForIngest(
+      history: [application, acked, commit, welcome],
+      pending: [application, welcome, commit, application],
+    );
+
+    expect(selected.map((envelope) => envelope.id), ['w', 'c', 'm']);
+  });
+
+  test('reopening with only acknowledged history selects nothing', () {
     final selected = selectEnvelopesForIngest(
       history: [
         _env('c', 2, 'application/mls-commit'),
         _env('w', 1, 'application/mls-welcome'),
-        _env('a', 3, 'application/mls-message'),
+        _env('a', 4, 'application/mls-message'),
+        _env('k', 5, 'application/call-key-binding'),
       ],
       pending: const [],
     );
-    expect(selected.map((e) => e.id), ['a']);
+    expect(selected, isEmpty);
   });
 }
 

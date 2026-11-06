@@ -4,7 +4,6 @@ import 'package:flutter/foundation.dart';
 
 import '../../core/auth/auth_controller.dart';
 import '../../core/crypto/mls_session_manager.dart';
-import '../../core/crypto/protocol_messages.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/api_config.dart';
 import 'encrypted_conversation_service.dart';
@@ -13,12 +12,11 @@ import 'realtime_client.dart';
 
 /// Chooses what [ConversationController.open] may hand to MLS.
 ///
-/// Handshake envelopes are processed only while they are still pending.
-/// An acknowledged Welcome, Commit, or Proposal stays in history and is not
-/// replayed. Application envelopes in history are kept so they can be
-/// displayed, but an id that is also pending is returned once. [ingestEnvelopes]
-/// then sorts by conversation sequence, so an earlier epoch is applied before
-/// a later one.
+/// Only pending deliveries are cryptographic inputs. Acknowledged history,
+/// including application and call-key-binding ciphertext, is not replayed.
+/// An id that appears in both lists is returned once, preferring the pending
+/// copy. The result is ordered by conversation sequence and protocol rank,
+/// the same rule [ingestEnvelopes] uses, not by envelope id.
 List<MessageEnvelope> selectEnvelopesForIngest({
   required List<MessageEnvelope> history,
   required List<MessageEnvelope> pending,
@@ -28,31 +26,19 @@ List<MessageEnvelope> selectEnvelopesForIngest({
   final seen = <String>{};
 
   void consider(MessageEnvelope envelope) {
+    if (!pendingIds.contains(envelope.id)) return;
     if (!seen.add(envelope.id)) return;
-    if (_isHandshake(envelope.contentType) && !pendingIds.contains(envelope.id)) {
-      return;
-    }
     selected.add(envelope);
   }
 
-  for (final envelope in history) {
-    consider(envelope);
-  }
   for (final envelope in pending) {
     consider(envelope);
   }
-  return selected;
-}
-
-bool _isHandshake(String contentType) {
-  switch (contentType) {
-    case MlsContentTypes.welcome:
-    case MlsContentTypes.commit:
-    case MlsContentTypes.proposal:
-      return true;
-    default:
-      return false;
+  for (final envelope in history) {
+    consider(envelope);
   }
+  selected.sort(compareEnvelopesForProcessing);
+  return selected;
 }
 
 enum ConversationLoadState { idle, loading, ready, error }
@@ -117,8 +103,8 @@ class ConversationController extends ChangeNotifier {
       conversationId = info.conversationId;
       _service.bindConversationPeer(info.conversationId, peerUserId);
 
-      // Pending envelopes drive handshake processing. History is display
-      // material and must not replay an acknowledged Welcome or Commit.
+      // Only pending deliveries are decrypted. Acknowledged history is not
+      // replayed into OpenMLS.
       final pending = await api.syncPending(token: token);
       final history = await api.listEnvelopes(
         token: token,

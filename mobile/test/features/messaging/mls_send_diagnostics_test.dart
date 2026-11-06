@@ -445,6 +445,130 @@ void main() {
     expect(service.keyChangeWarning, isNull);
   });
 
+  test('acknowledged application history is not decrypted by a new service', () async {
+    final history = [_env('a', 4, MlsContentTypes.application)];
+    final selected = selectEnvelopesForIngest(history: history, pending: const []);
+    expect(selected, isEmpty);
+
+    final engine = _ScriptedMls(processError: _SecretLeak());
+    final service = _service(engine, acks: []);
+    service.bindConversationPeer(_conv, _peer);
+    service.rememberGroup(_conv, 'abc');
+    final views = await service.ingestEnvelopes(
+      token: 'tok',
+      myUserId: _me,
+      envelopes: selected,
+    );
+    expect(views, isEmpty);
+    expect(engine.processCalls, 0);
+    expect(service.keyChangeWarning, isNull);
+    expect(MlsDiagnostics.events, isEmpty);
+  });
+
+  test('one pending application envelope is decrypted once', () async {
+    final application = _env('a', 4, MlsContentTypes.application);
+    final selected = selectEnvelopesForIngest(
+      history: [application, application],
+      pending: [application],
+    );
+    expect(selected, hasLength(1));
+
+    final acks = <String>[];
+    final engine = _ScriptedMls();
+    final service = _service(engine, acks: acks);
+    service.bindConversationPeer(_conv, _peer);
+    service.rememberGroup(_conv, 'abc');
+    final views = await service.ingestEnvelopes(
+      token: 'tok',
+      myUserId: _me,
+      envelopes: selected,
+    );
+    expect(views, hasLength(1));
+    expect(views.single.plaintext, 'hi');
+    expect(engine.processCalls, 1);
+    expect(acks, ['a']);
+    expect(service.keyChangeWarning, isNull);
+  });
+
+  test('a pending application envelope absent from history is processed', () async {
+    final application = _env('fresh', 6, MlsContentTypes.application);
+    final selected = selectEnvelopesForIngest(
+      history: [_env('old', 4, MlsContentTypes.application)],
+      pending: [application],
+    );
+    expect(selected.map((envelope) => envelope.id), ['fresh']);
+
+    final acks = <String>[];
+    final engine = _ScriptedMls();
+    final service = _service(engine, acks: acks);
+    service.bindConversationPeer(_conv, _peer);
+    service.rememberGroup(_conv, 'abc');
+    final views = await service.ingestEnvelopes(
+      token: 'tok',
+      myUserId: _me,
+      envelopes: selected,
+    );
+    expect(views.single.serverEnvelopeId, 'fresh');
+    expect(engine.processCalls, 1);
+    expect(acks, ['fresh']);
+  });
+
+  test('concurrent ingestion of one pending envelope decrypts once', () async {
+    final acks = <String>[];
+    final engine = _ScriptedMls();
+    final service = _service(engine, acks: acks);
+    service.bindConversationPeer(_conv, _peer);
+    service.rememberGroup(_conv, 'abc');
+    final envelope = _env('a', 4, MlsContentTypes.application);
+    final results = await Future.wait([
+      service.ingestEnvelopes(
+        token: 'tok',
+        myUserId: _me,
+        envelopes: [envelope],
+      ),
+      service.ingestEnvelopes(
+        token: 'tok',
+        myUserId: _me,
+        envelopes: [envelope],
+      ),
+    ]);
+    expect(engine.processCalls, 1);
+    expect(acks, ['a']);
+    expect(results.expand((views) => views), hasLength(1));
+  });
+
+  test('failed application decryption is not acknowledged and can be retried', () async {
+    final envelope = _env('a', 4, MlsContentTypes.application);
+    final engine = _ScriptedMls(processError: _SecretLeak());
+    final firstAcks = <String>[];
+    final first = _service(engine, acks: firstAcks);
+    first.bindConversationPeer(_conv, _peer);
+    first.rememberGroup(_conv, 'abc');
+    final failed = await first.ingestEnvelopes(
+      token: 'tok',
+      myUserId: _me,
+      envelopes: [envelope],
+    );
+    expect(failed, isEmpty);
+    expect(firstAcks, isEmpty);
+    expect(engine.processCalls, 1);
+    expect(first.keyChangeWarning, EncryptedConversationService.processingWarning);
+
+    engine.processError = null;
+    final secondAcks = <String>[];
+    final second = _service(engine, acks: secondAcks);
+    second.bindConversationPeer(_conv, _peer);
+    second.rememberGroup(_conv, 'abc');
+    final retried = await second.ingestEnvelopes(
+      token: 'tok',
+      myUserId: _me,
+      envelopes: [envelope],
+    );
+    expect(retried, hasLength(1));
+    expect(secondAcks, ['a']);
+    expect(engine.processCalls, 2);
+  });
+
   test('the sender can encrypt after the group exists', () async {
     final engine = _ScriptedMls();
     final harness = await _harness(engine: engine);
