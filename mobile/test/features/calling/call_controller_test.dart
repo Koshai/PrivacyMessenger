@@ -542,4 +542,77 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 150));
     expect(hangups, 1);
   });
+
+  test('video createOffer completes before initiate so callee never sees empty offer', () async {
+    // Regression 19.7.26B: video createOffer after initiate let Accept race
+    // missing_remote_offer / peer_hello_timeout.
+    final media = FakeCallService()
+      ..createOfferDelay = const Duration(milliseconds: 80);
+    final order = <String>[];
+    final client = MockClient((request) async {
+      if (request.method == 'POST' && request.url.path == '/calls') {
+        order.add('initiate');
+        expect(media.createOfferCount, 1, reason: 'offer must finish before initiate');
+        return http.Response(jsonEncode(_sessionJson(media: 'video')), 201);
+      }
+      if (request.url.path.endsWith('/offer')) {
+        order.add('setOffer');
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        expect(body['sdp'], 'v=0\r\noffer-fake');
+        return http.Response(
+          jsonEncode(_sessionJson(media: 'video', offer: 'v=0\r\noffer-fake')),
+          200,
+        );
+      }
+      return http.Response(jsonEncode({'candidates': []}), 200);
+    });
+    final controller = _controller(media: media, client: client);
+    final started = controller.startOutgoing(
+      peerUserId: 'bob',
+      mediaType: CallMediaType.video,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(order, isEmpty, reason: 'no signaling until createOffer returns');
+    expect(controller.phase, CallPhase.outgoingRinging);
+    await started;
+    expect(order, ['initiate', 'setOffer']);
+    expect(controller.session?.sdpOffer, 'v=0\r\noffer-fake');
+  });
+
+  test('acceptIncoming polls until delayed caller offer arrives', () async {
+    final media = FakeCallService();
+    var gets = 0;
+    final client = MockClient((request) async {
+      final path = request.url.path;
+      if (request.method == 'POST' && path.endsWith('/accept')) {
+        return http.Response(jsonEncode(_sessionJson(state: 'accepted')), 200);
+      }
+      if (path == '/calls/call-1') {
+        gets++;
+        if (gets < 3) {
+          return http.Response(jsonEncode(_sessionJson(state: 'accepted')), 200);
+        }
+        return http.Response(
+          jsonEncode(_sessionJson(state: 'accepted', offer: 'v=0\r\noffer-late')),
+          200,
+        );
+      }
+      if (path.endsWith('/answer')) {
+        return http.Response(
+          jsonEncode(
+            _sessionJson(state: 'accepted', offer: 'v=0\r\noffer-late', answer: 'v=0\r\nanswer-fake'),
+          ),
+          200,
+        );
+      }
+      return http.Response(jsonEncode({'candidates': []}), 200);
+    });
+    final controller = _controller(media: media, client: client, myUserId: 'bob');
+    controller.phase = CallPhase.incomingRinging;
+    controller.session = CallSession.fromJson(_sessionJson(state: 'ringing'));
+    await controller.acceptIncoming();
+    expect(media.remoteOffer, 'v=0\r\noffer-late');
+    expect(gets, greaterThanOrEqualTo(3));
+    expect(controller.phase, isNot(CallPhase.failed));
+  });
 }

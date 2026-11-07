@@ -231,6 +231,77 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 40));
     expect(hangups, 1);
   });
+
+  test('early remote ICE during ringing is applied after Accept prepare', () async {
+    // Regression 19.7.26B: video caller ICE arrives while callee is still
+    // ringing; applying/cursor-advancing before prepare left the callee without
+    // ice_connected and the caller hit peer_hello_timeout.
+    final media = FakeCallService();
+    var iceListCalls = 0;
+    final client = MockClient((request) async {
+      final path = request.url.path;
+      if (path == '/calls/call-1') {
+        return http.Response(
+          jsonEncode(_sessionJson(state: 'ringing', offer: 'v=0\r\noffer-fake')),
+          200,
+        );
+      }
+      if (path.endsWith('/accept')) {
+        return http.Response(
+          jsonEncode(_sessionJson(state: 'accepted', offer: 'v=0\r\noffer-fake')),
+          200,
+        );
+      }
+      if (path.endsWith('/answer')) {
+        return http.Response(
+          jsonEncode(
+            _sessionJson(
+              state: 'accepted',
+              offer: 'v=0\r\noffer-fake',
+              answer: 'v=0\r\nanswer-fake',
+            ),
+          ),
+          200,
+        );
+      }
+      if (path.endsWith('/ice') && request.method == 'GET') {
+        iceListCalls++;
+        return http.Response(
+          jsonEncode({
+            'candidates': [
+              {
+                'seq': 1,
+                'candidate': 'candidate:early-1',
+                'client_ice_id': 'peer-early-1',
+                'sdp_mid': '0',
+                'sdp_mline_index': 0,
+              },
+            ],
+          }),
+          200,
+        );
+      }
+      return http.Response(jsonEncode({'candidates': []}), 200);
+    });
+    final hints = StreamController<Map<String, dynamic>>.broadcast();
+    addTearDown(hints.close);
+    final controller = _bob(media: media, client: client, hints: hints.stream);
+    addTearDown(controller.dispose);
+    await controller.startListening();
+
+    hints.add({'type': 'call.ringing', 'call_id': 'call-1'});
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    expect(controller.phase, CallPhase.incomingRinging);
+
+    hints.add({'type': 'call.ice', 'call_id': 'call-1'});
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    expect(media.remoteIce, isEmpty, reason: 'must not apply ICE before prepare');
+
+    await controller.acceptIncoming();
+    expect(media.remoteOffer, 'v=0\r\noffer-fake');
+    expect(media.remoteIce, contains('candidate:early-1'));
+    expect(iceListCalls, greaterThan(0));
+  });
 }
 
 class _DelayedPrepareFake extends FakeCallService {
@@ -247,3 +318,4 @@ class _DelayedPrepareFake extends FakeCallService {
     await super.prepareIncoming(mediaType: mediaType, enableVideo: enableVideo);
   }
 }
+

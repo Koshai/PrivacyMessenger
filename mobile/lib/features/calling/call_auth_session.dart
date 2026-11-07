@@ -115,10 +115,25 @@ class CallAuthSession {
   /// deviceId -> user marked the safety number verified.
   final Set<String> manualTrust;
 
+  /// Process-local cache so video ICE-connected auth does not block on
+  /// FlutterSecureStorage under camera/encoder load (device evidence: emu
+  /// reached call_auth_start but never call_auth_hello_sent within the
+  /// peer hello window).
+  static final Map<String, SimpleKeyPair> _memoryKeyPairs = {};
+  static final Map<String, Future<SimpleKeyPair>> _memoryKeyLoads = {};
+
+  /// Prefetch the call-auth keypair before ICE Connected.
+  Future<void> warmKeyPair() async {
+    await _keyPair();
+  }
+
   Future<CallAuthOutcome> run(CallAuthRequest request) async {
+    DeliveryTiming.record('call_auth_keypair_begin', 0);
     final pair = await _keyPair();
+    DeliveryTiming.record('call_auth_keypair_ready', 0);
     final public = (await pair.extractPublicKey()).bytes;
     await api.registerCallKey(token: token(), publicKey: public);
+    DeliveryTiming.record('call_auth_key_registered', 0);
     final mls = _hexToBytes(localMlsFingerprintHex);
     final nonce = _random(32);
     final role = request.iAmCaller ? 1 : 2;
@@ -147,6 +162,7 @@ class CallAuthSession {
         'signature_b64': base64Encode(helloSig.bytes),
       },
     );
+    DeliveryTiming.record('call_auth_hello_sent', 0);
 
     final exchange = bindingExchange;
     if (exchange == null) {
@@ -268,14 +284,16 @@ class CallAuthSession {
       return const CallAuthOutcome(phase: CallAuthPhase.failed, error: 'Identity revoked');
     }
 
+    final dtls = await _resolveDtls(request);
+    DeliveryTiming.record('call_auth_dtls_ready', 0);
     final callerNonce = request.iAmCaller ? nonce : peerNonce;
     final calleeNonce = request.iAmCaller ? peerNonce : nonce;
     final callerKey = request.iAmCaller ? public : peerKey;
     final calleeKey = request.iAmCaller ? peerKey : public;
     final callerMls = request.iAmCaller ? mls : peerMls;
     final calleeMls = request.iAmCaller ? peerMls : mls;
-    final callerDtls = request.iAmCaller ? request.localDtls : request.remoteDtls;
-    final calleeDtls = request.iAmCaller ? request.remoteDtls : request.localDtls;
+    final callerDtls = request.iAmCaller ? dtls.local : dtls.remote;
+    final calleeDtls = request.iAmCaller ? dtls.remote : dtls.local;
     final transcript = CallTranscript(
       callId: request.session.id,
       callerUser: request.session.callerUserId,
@@ -303,8 +321,8 @@ class CallAuthSession {
         'nonce_b64': base64Encode(nonce),
         'call_public_key_b64': base64Encode(public),
         'mls_fingerprint_hex': localMlsFingerprintHex,
-        'dtls_local_b64': base64Encode(request.localDtls),
-        'dtls_remote_b64': base64Encode(request.remoteDtls),
+        'dtls_local_b64': base64Encode(dtls.local),
+        'dtls_remote_b64': base64Encode(dtls.remote),
         'signature_b64': base64Encode(confirmSig.bytes),
       },
     );
@@ -325,7 +343,7 @@ class CallAuthSession {
     }
     final phase = await verifyPeerConfirm(
       pinnedCallKey: peerKey,
-      observedRemoteDtls: request.remoteDtls,
+      observedRemoteDtls: dtls.remote,
       transcript: transcript,
       peerIsCaller: !request.iAmCaller,
       signature: base64Decode(peerConfirm['signature_b64'] as String),
@@ -351,17 +369,46 @@ class CallAuthSession {
     );
   }
 
+  Future<({List<int> local, List<int> remote})> _resolveDtls(CallAuthRequest request) async {
+    final resolve = request.resolveDtls;
+    if (resolve != null) {
+      return resolve();
+    }
+    final local = request.localDtls;
+    final remote = request.remoteDtls;
+    if (local == null || remote == null) {
+      throw StateError('DTLS fingerprint unavailable');
+    }
+    return (local: local, remote: remote);
+  }
+
   Future<SimpleKeyPair> _keyPair() async {
     final key = 'call_auth_seed_${userId}_$deviceId';
-    final existing = await _store.read(key);
-    if (existing != null) {
-      return Ed25519().newKeyPairFromSeed(base64Decode(existing));
+    final cached = _memoryKeyPairs[key];
+    if (cached != null) return cached;
+    final inflight = _memoryKeyLoads[key];
+    if (inflight != null) return inflight;
+    final load = () async {
+      final existing = await _store.read(key);
+      late SimpleKeyPair pair;
+      if (existing != null) {
+        pair = await Ed25519().newKeyPairFromSeed(base64Decode(existing));
+      } else {
+        pair = await Ed25519().newKeyPair();
+        final seed = await pair.extractPrivateKeyBytes();
+        final rawSeed = seed.length == 32 ? seed : seed.sublist(0, 32);
+        await _store.write(key, base64Encode(rawSeed));
+        pair = await Ed25519().newKeyPairFromSeed(rawSeed);
+      }
+      _memoryKeyPairs[key] = pair;
+      return pair;
+    }();
+    _memoryKeyLoads[key] = load;
+    try {
+      return await load;
+    } finally {
+      _memoryKeyLoads.remove(key);
     }
-    final pair = await Ed25519().newKeyPair();
-    final seed = await pair.extractPrivateKeyBytes();
-    final rawSeed = seed.length == 32 ? seed : seed.sublist(0, 32);
-    await _store.write(key, base64Encode(rawSeed));
-    return Ed25519().newKeyPairFromSeed(rawSeed);
   }
 
   Future<List<int>?> _readPin(String peerDevice) async {

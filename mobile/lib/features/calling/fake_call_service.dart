@@ -23,6 +23,8 @@ class FakeCallService implements CallService {
   int applyAnswerCount = 0;
   bool remotePlayback = false;
   int peerConnectionReplacements = 0;
+  Duration? createOfferDelay;
+  int createOfferCount = 0;
 
   @override
   Stream<CallMediaEvent> get events => _events.stream;
@@ -76,7 +78,12 @@ class FakeCallService implements CallService {
   }
 
   @override
-  Future<String> createOffer() async => 'v=0\r\noffer-fake';
+  Future<String> createOffer() async {
+    createOfferCount++;
+    final delay = createOfferDelay;
+    if (delay != null) await Future<void>.delayed(delay);
+    return 'v=0\r\noffer-fake';
+  }
 
   @override
   Future<void> applyRemoteOffer(String sdp) async {

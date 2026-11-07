@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
+import '../messaging/delivery_timing.dart';
 import 'call_auth.dart';
 import 'call_service.dart';
 import 'ice_servers.dart';
@@ -30,8 +31,14 @@ class WebRtcCallService implements CallService {
   bool _renderersReady = false;
   int _iceSeq = 0;
   bool _videoActive = false;
+  bool _tracksAttached = false;
+  /// When set, local capture is in flight (incoming path) and must complete
+  /// before tracks are attached after the remote offer.
+  Future<void>? _captureFuture;
+  int _mediaGeneration = 0;
   final List<RTCIceCandidate> _pendingRemoteIce = [];
   bool _remoteDescriptionReady = false;
+  bool _connectedSignaled = false;
 
   @override
   Stream<CallMediaEvent> get events => _events.stream;
@@ -56,14 +63,14 @@ class WebRtcCallService implements CallService {
     required CallMediaType mediaType,
     required bool enableVideo,
   }) =>
-      _prepare(enableVideo: enableVideo);
+      _prepare(enableVideo: enableVideo, attachTracksImmediately: true);
 
   @override
   Future<void> prepareIncoming({
     required CallMediaType mediaType,
     required bool enableVideo,
   }) =>
-      _prepare(enableVideo: enableVideo);
+      _prepare(enableVideo: enableVideo, attachTracksImmediately: false);
 
   Future<IceServerConfig> _resolveIce() async {
     final loaded = loadIceConfig == null ? _fallback : await loadIceConfig!();
@@ -80,13 +87,20 @@ class WebRtcCallService implements CallService {
     return config;
   }
 
-  Future<void> _prepare({required bool enableVideo}) async {
+  Future<void> _prepare({
+    required bool enableVideo,
+    required bool attachTracksImmediately,
+  }) async {
     final ice = await _resolveIce();
     if (_pc != null) {
       _events.add(const CallMediaEvent(kind: CallMediaEventKind.peerConnectionReplaced));
     }
+    // Preserve remote ICE queued before Accept created a PC (ringing window).
+    final preservedIce = List<RTCIceCandidate>.from(_pendingRemoteIce);
     await disposeMedia();
+    _pendingRemoteIce.addAll(preservedIce);
     await _ensureRenderers();
+    _connectedSignaled = false;
     _pc = await createPeerConnection({
       'iceServers': ice.toFlutterWebRtcIceServers(),
       if (ice.relayOnly) 'iceTransportPolicy': 'relay',
@@ -106,12 +120,24 @@ class WebRtcCallService implements CallService {
       switch (state) {
         case RTCIceConnectionState.RTCIceConnectionStateConnected:
         case RTCIceConnectionState.RTCIceConnectionStateCompleted:
-          _events.add(const CallMediaEvent(kind: CallMediaEventKind.connectionConnected));
+          _signalConnected();
         case RTCIceConnectionState.RTCIceConnectionStateFailed:
           _events.add(const CallMediaEvent(kind: CallMediaEventKind.connectionFailed));
         case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
           _events.add(
               const CallMediaEvent(kind: CallMediaEventKind.connectionDisconnected));
+        default:
+          break;
+      }
+    };
+    // Multi-m-line video calls on some Android builds report PC connection
+    // state more reliably than iceConnectionState alone.
+    _pc!.onConnectionState = (RTCPeerConnectionState state) {
+      switch (state) {
+        case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
+          _signalConnected();
+        case RTCPeerConnectionState.RTCPeerConnectionStateFailed:
+          _events.add(const CallMediaEvent(kind: CallMediaEventKind.connectionFailed));
         default:
           break;
       }
@@ -129,31 +155,87 @@ class WebRtcCallService implements CallService {
       }
     };
 
+    final gen = ++_mediaGeneration;
+    if (attachTracksImmediately) {
+      await _captureLocal(enableVideo: enableVideo, generation: gen);
+      await _attachLocalTracks();
+    } else {
+      // Incoming: warm the camera while Accept/signaling continue, but do not
+      // addTrack until after setRemoteDescription so Unified Plan m-lines match
+      // the offer (video answerer ICE was stalling with pre-attached tracks).
+      _captureFuture = _captureLocal(enableVideo: enableVideo, generation: gen);
+      DeliveryTiming.record('call_media_capture_started', 0, detail: enableVideo ? 'video' : 'audio');
+    }
+  }
+
+  void _signalConnected() {
+    if (_connectedSignaled) return;
+    _connectedSignaled = true;
+    _events.add(const CallMediaEvent(kind: CallMediaEventKind.connectionConnected));
+  }
+
+  Future<void> _captureLocal({
+    required bool enableVideo,
+    required int generation,
+  }) async {
     _videoActive = false;
+    MediaStream stream;
     if (enableVideo) {
       try {
-        _local = await navigator.mediaDevices.getUserMedia({
+        stream = await navigator.mediaDevices.getUserMedia({
           'audio': true,
           'video': {'facingMode': 'user'},
         });
+        if (generation != _mediaGeneration) {
+          await _discardStream(stream);
+          return;
+        }
         _videoActive = true;
       } catch (_) {
         // Camera failure: fall back to audio-only when supported.
-        _local = await navigator.mediaDevices.getUserMedia({
+        stream = await navigator.mediaDevices.getUserMedia({
           'audio': true,
           'video': false,
         });
+        if (generation != _mediaGeneration) {
+          await _discardStream(stream);
+          return;
+        }
       }
     } else {
-      _local = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         'audio': true,
         'video': false,
       });
+      if (generation != _mediaGeneration) {
+        await _discardStream(stream);
+        return;
+      }
     }
+    _local = stream;
     _localRenderer.srcObject = _local;
-    for (final track in _local!.getTracks()) {
-      await _pc!.addTrack(track, _local!);
+    DeliveryTiming.record(
+      'call_media_capture_ready',
+      0,
+      detail: _videoActive ? 'video' : 'audio',
+    );
+  }
+
+  Future<void> _discardStream(MediaStream stream) async {
+    for (final track in stream.getTracks()) {
+      await track.stop();
     }
+    await stream.dispose();
+  }
+
+  Future<void> _attachLocalTracks() async {
+    final pc = _pc;
+    final local = _local;
+    if (pc == null || local == null || _tracksAttached) return;
+    for (final track in local.getTracks()) {
+      await pc.addTrack(track, local);
+    }
+    _tracksAttached = true;
   }
 
   @override
@@ -176,6 +258,12 @@ class WebRtcCallService implements CallService {
     final cleaned = sanitizeCallSdp(sdp);
     await _pc!.setRemoteDescription(RTCSessionDescription(cleaned, 'offer'));
     _remoteDescriptionReady = true;
+    final capture = _captureFuture;
+    if (capture != null) {
+      await capture;
+      _captureFuture = null;
+    }
+    await _attachLocalTracks();
     await _flushPendingRemoteIce();
     await _noteRemoteFingerprint();
   }
@@ -202,10 +290,12 @@ class WebRtcCallService implements CallService {
     String? sdpMid,
     int? sdpMLineIndex,
   }) async {
-    final pc = _pc;
-    if (pc == null) return;
     final ice = RTCIceCandidate(candidate, sdpMid, sdpMLineIndex);
-    if (!_remoteDescriptionReady) {
+    final pc = _pc;
+    // Always queue until a live PC has a remote description. Dropping while
+    // pc==null permanently loses early caller candidates (video Accept is slow
+    // enough that ICE often arrives during ringing).
+    if (pc == null || !_remoteDescriptionReady) {
       _pendingRemoteIce.add(ice);
       return;
     }
@@ -270,14 +360,23 @@ class WebRtcCallService implements CallService {
 
   @override
   Future<({List<int> local, List<int> remote})?> dtlsFingerprints() async {
-    final local = parseSdpFingerprint((await _pc?.getLocalDescription())?.sdp);
-    final remote = parseSdpFingerprint((await _pc?.getRemoteDescription())?.sdp);
-    if (local == null || remote == null) return null;
-    return (local: local, remote: remote);
+    // Brief retry: descriptions are set before ICE Connected, but some devices
+    // briefly return null mid renegotiation for multi-m-line video SDP.
+    for (var i = 0; i < 5; i++) {
+      final local = parseSdpFingerprint((await _pc?.getLocalDescription())?.sdp);
+      final remote = parseSdpFingerprint((await _pc?.getRemoteDescription())?.sdp);
+      if (local != null && remote != null) {
+        return (local: local, remote: remote);
+      }
+      await Future<void>.delayed(Duration(milliseconds: 40 * (i + 1)));
+    }
+    return null;
   }
 
   @override
   Future<void> disposeMedia() async {
+    _mediaGeneration++;
+    _captureFuture = null;
     for (final track in _local?.getTracks() ?? const <MediaStreamTrack>[]) {
       await track.stop();
     }
@@ -288,6 +387,8 @@ class WebRtcCallService implements CallService {
     _remoteStream = null;
     _remotePlayback = false;
     _videoActive = false;
+    _tracksAttached = false;
+    _connectedSignaled = false;
     _iceSeq = 0;
     _pendingRemoteIce.clear();
     _remoteDescriptionReady = false;

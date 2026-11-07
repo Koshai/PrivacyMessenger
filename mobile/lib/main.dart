@@ -165,6 +165,8 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
   bool _historyUnavailable = false;
   bool _shellDisposed = false;
   String _token = '';
+  String? _cachedCallAuthFingerprintHex;
+  CallAuthStore? _callAuthStore;
 
   @override
   void initState() {
@@ -196,14 +198,14 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
       authenticatePeer: (request) async {
         final userId = widget.authController.state.userId ?? '';
         final deviceId = widget.authController.state.deviceId ?? '';
-        final record = await DeviceCryptoStore().read(userId: userId, deviceId: deviceId);
-        if (record == null) {
+        final fingerprint = await _callAuthFingerprint(userId: userId, deviceId: deviceId);
+        if (fingerprint == null) {
           return const CallAuthOutcome(
             phase: CallAuthPhase.failed,
             error: 'No messaging identity for this device',
           );
         }
-        _calls.localSafetyFingerprintHex = record.fingerprintHex;
+        _calls.localSafetyFingerprintHex = fingerprint;
         final pipeline = _messaging;
         if (pipeline == null) {
           return const CallAuthOutcome(
@@ -227,11 +229,26 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
           token: () => _token,
           userId: userId,
           deviceId: deviceId,
-          localMlsFingerprintHex: record.fingerprintHex,
+          localMlsFingerprintHex: fingerprint,
           bindingExchange: channel.exchange,
           deviceStillEnrolled: (peerUser, peerDevice) =>
               _peerEnrolled(peerUser, peerDevice),
+          store: _callAuthStore ??= SecureCallAuthStore(),
         ).run(request);
+      },
+      warmCallAuth: () async {
+        final userId = widget.authController.state.userId ?? '';
+        final deviceId = widget.authController.state.deviceId ?? '';
+        final fingerprint = await _callAuthFingerprint(userId: userId, deviceId: deviceId);
+        if (fingerprint == null) return;
+        await CallAuthSession(
+          api: callingApi,
+          token: () => _token,
+          userId: userId,
+          deviceId: deviceId,
+          localMlsFingerprintHex: fingerprint,
+          store: _callAuthStore ??= SecureCallAuthStore(),
+        ).warmKeyPair();
       },
       recheckEnrollment: (peerUser, peerDevice) => _peerEnrolled(peerUser, peerDevice),
       clearLocalSecrets: () async {
@@ -239,6 +256,7 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
         final deviceId = widget.authController.state.deviceId ?? '';
         await clearLocalCallSecret(userId: userId, deviceId: deviceId);
         await _bindingInbox.clear();
+        _cachedCallAuthFingerprintHex = null;
       },
     );
     _calls.onLifecycle = CallPlatformBridge.instance.show;
@@ -306,6 +324,19 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
       await _realtime.start(_token);
       await _calls.startListening();
     }
+  }
+
+  Future<String?> _callAuthFingerprint({
+    required String userId,
+    required String deviceId,
+  }) async {
+    final cached = _cachedCallAuthFingerprintHex;
+    if (cached != null && cached.isNotEmpty) return cached;
+    final record = await DeviceCryptoStore().read(userId: userId, deviceId: deviceId);
+    final hex = record?.fingerprintHex;
+    if (hex == null || hex.isEmpty) return null;
+    _cachedCallAuthFingerprintHex = hex;
+    return hex;
   }
 
   @override

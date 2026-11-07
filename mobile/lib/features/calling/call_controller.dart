@@ -35,6 +35,7 @@ class CallController extends ChangeNotifier {
     this.disconnectGrace = const Duration(seconds: 12),
     this.iceSubmitAttempts = 3,
     this.authenticatePeer,
+    this.warmCallAuth,
     this.authTimeout = const Duration(seconds: 45),
     this.recheckEnrollment,
     this.clearLocalSecrets,
@@ -51,6 +52,10 @@ class CallController extends ChangeNotifier {
   final Duration disconnectGrace;
   final int iceSubmitAttempts;
   final CallAuthenticator? authenticatePeer;
+
+  /// Prefetch call-auth key material during prepare so hello is not blocked by
+  /// secure-storage latency after ICE Connected (video encoder load).
+  final Future<void> Function()? warmCallAuth;
   final Duration authTimeout;
 
   /// Production rechecks enrollment while a call is up. Null in unit tests
@@ -113,6 +118,9 @@ class CallController extends ChangeNotifier {
   /// ~75ms after Accept (server end_reason=hangup, no answer posted).
   bool _localDescriptionSet = false;
   bool _remoteDescriptionSet = false;
+
+  /// Local ICE gathered during createOffer-before-initiate (no call id yet).
+  final List<CallMediaEvent> _pendingLocalIce = [];
 
   bool get _sdpPairReady {
     if (_localDescriptionSet && _remoteDescriptionSet) return true;
@@ -226,6 +234,21 @@ class CallController extends ChangeNotifier {
         enableVideo: mediaType == CallMediaType.video,
       );
       if (!_isCurrent(gen)) return;
+      unawaited(_warmAuth());
+      // Block re-entrancy and allow hangUp while createOffer runs (video capture
+      // can take seconds). Do not arm the ring timer until the server call exists.
+      phase = CallPhase.outgoingRinging;
+      notifyListeners();
+      // Build the local offer before initiate so the callee cannot Accept into a
+      // ringing call that still has no SDP (video createOffer is slow enough to
+      // lose that race → missing_remote_offer StateError on Accept).
+      final offer = await media.createOffer();
+      if (!_isCurrent(gen)) return;
+      if (offer.trim().isEmpty) {
+        throw StateError('empty_local_offer');
+      }
+      _localDescriptionSet = true;
+      DeliveryTiming.record('call_local_offer_ready', 0);
       final clientId = 'c-${DateTime.now().microsecondsSinceEpoch}';
       session = await api.initiate(
         token: tokenProvider(),
@@ -233,29 +256,23 @@ class CallController extends ChangeNotifier {
         mediaType: mediaType,
         clientCallId: clientId,
       );
-      if (!_isCurrent(gen)) return;
-      phase = CallPhase.outgoingRinging;
-      notifyListeners();
-      _armRingTimeout();
-      final offer = await media.createOffer();
       if (!_isCurrent(gen) || session == null) return;
-      if (offer.trim().isEmpty) {
-        throw StateError('empty_local_offer');
-      }
-      _localDescriptionSet = true;
+      await _flushPendingLocalIce(gen, session!.id);
       session = await api.setOffer(
         token: tokenProvider(),
         callId: session!.id,
         sdp: offer,
       );
       _processedOffers.add(offer);
+      if (!_isCurrent(gen)) return;
+      _armRingTimeout();
       _startPollingIce();
     } catch (e) {
       if (!_isCurrent(gen)) return;
       DeliveryTiming.record(
         'call_offer_abort',
         0,
-        detail: e.runtimeType.toString(),
+        detail: _shortErrorDetail(e),
       );
       await _abortSetup(e);
     }
@@ -266,6 +283,7 @@ class CallController extends ChangeNotifier {
     if (current == null) return;
     final gen = _generation;
     final callId = current.id;
+    DeliveryTiming.record('call_accept_tap', 0);
     // Disarm ring timeout before any await so Accept cannot race HangUp.
     _ringTimer?.cancel();
     final allowed = await requestPermissions(current.mediaType);
@@ -287,11 +305,16 @@ class CallController extends ChangeNotifier {
       );
       span.lap('call_accept_prepare');
       if (!_isCurrent(gen) || session?.id != callId) return;
+      // PC now exists: re-pull any candidates that arrived during ringing (they
+      // were intentionally not applied / not cursor-advanced while unprepared).
+      unawaited(_warmAuth());
+      _iceAfter = 0;
+      _appliedIceSeq.clear();
       session = await api.accept(token: tokenProvider(), callId: callId);
       span.lap('call_accept_api');
       if (!_isCurrent(gen) || session?.id != callId) return;
       notifyListeners();
-      final fresh = await api.get(token: tokenProvider(), callId: callId);
+      var fresh = await api.get(token: tokenProvider(), callId: callId);
       span.lap('call_accept_get');
       if (!_isCurrent(gen) || session?.id != callId) return;
       session = fresh;
@@ -300,7 +323,23 @@ class CallController extends ChangeNotifier {
         await _cleanupLocal(ended: true);
         return;
       }
-      final offer = fresh.sdpOffer;
+      // Brief wait for the caller's setOffer to land (defense in depth if the
+      // peer still posts the offer after initiate).
+      var offer = fresh.sdpOffer;
+      // Up to ~5s: caller setOffer can lag initiate on slow links after video
+      // createOffer-before-initiate (still observed missing_remote_offer once).
+      for (var i = 0; i < 50 && (offer == null || offer.isEmpty); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        if (!_isCurrent(gen) || session?.id != callId) return;
+        fresh = await api.get(token: tokenProvider(), callId: callId);
+        session = fresh;
+        if (fresh.isEnded) {
+          DeliveryTiming.record('call_accept_already_ended', 0);
+          await _cleanupLocal(ended: true);
+          return;
+        }
+        offer = fresh.sdpOffer;
+      }
       if (offer == null || offer.isEmpty) {
         throw StateError('missing_remote_offer');
       }
@@ -323,14 +362,20 @@ class CallController extends ChangeNotifier {
         _processedAnswers.add(answer);
         span.lap('call_accept_set_answer');
       }
+      await _pullIce();
       _startPollingIce();
+      // DTLS fingerprints live in SDP; start MLS hello while ICE gathers so
+      // video peers are not racing a 10s hello window after ICE Connected.
+      if (_sdpPairReady) {
+        unawaited(_runAuth(gen));
+      }
       span.total('call_accept_total');
     } catch (e) {
       if (!_isCurrent(gen)) return;
       DeliveryTiming.record(
         'call_accept_abort',
         0,
-        detail: e.runtimeType.toString(),
+        detail: _shortErrorDetail(e),
       );
       await _abortSetup(e);
     }
@@ -348,8 +393,12 @@ class CallController extends ChangeNotifier {
 
   Future<void> cancelOutgoing() async {
     final id = session?.id;
-    if (id == null) return;
     DeliveryTiming.record('call_local_end', 0, detail: 'cancel');
+    if (id == null) {
+      // Pre-initiate cancel (createOffer still running): release local media only.
+      await _cleanupLocal(ended: true);
+      return;
+    }
     try {
       session = await api.cancel(token: tokenProvider(), callId: id);
     } finally {
@@ -492,9 +541,21 @@ class CallController extends ChangeNotifier {
         !_mediaReleased &&
         session?.id == callId &&
         authPhase == CallAuthPhase.authenticated &&
+        localMediaConnected &&
         phase != CallPhase.ended &&
         phase != CallPhase.idle &&
         phase != CallPhase.failed;
+  }
+
+  Future<void> _warmAuth() async {
+    final warm = warmCallAuth;
+    if (warm == null) return;
+    try {
+      await warm();
+      DeliveryTiming.record('call_auth_warm_ok', 0);
+    } catch (_) {
+      DeliveryTiming.record('call_auth_warm_failed', 0);
+    }
   }
 
   Future<void> _runAuth(int generation) async {
@@ -507,17 +568,20 @@ class CallController extends ChangeNotifier {
     notifyListeners();
     DeliveryTiming.record('call_auth_start', 0);
     try {
-      final fps = await media.dtlsFingerprints().timeout(authTimeout);
-      if (!_isCurrent(generation) || session?.id != current.id || _mediaReleased) return;
-      if (fps == null) {
-        throw StateError('DTLS fingerprint unavailable');
-      }
-      _observedRemoteDtls = List<int>.from(fps.remote);
+      // Publish hello immediately; resolve DTLS only when confirm needs it.
+      // Waiting on dtlsFingerprints before hello made video peers hit
+      // peer_hello_timeout while the other side was still reading SDP.
       final outcome = await verify(CallAuthRequest(
         session: current,
         myUserId: myUserId,
-        localDtls: fps.local,
-        remoteDtls: fps.remote,
+        resolveDtls: () async {
+          final fps = await media.dtlsFingerprints().timeout(authTimeout);
+          if (fps == null) {
+            throw StateError('DTLS fingerprint unavailable');
+          }
+          _observedRemoteDtls = List<int>.from(fps.remote);
+          return fps;
+        },
       )).timeout(authTimeout);
       if (!_isCurrent(generation) || session?.id != current.id || _mediaReleased) return;
       if (phase == CallPhase.ended || phase == CallPhase.idle || phase == CallPhase.failed) return;
@@ -535,6 +599,14 @@ class CallController extends ChangeNotifier {
         notifyListeners();
         await hangUp(reason: 'auth_failed');
         return;
+      }
+      // Ensure mid-call DTLS restart detection has a pin even when the
+      // authenticator did not invoke resolveDtls (test fakes / short-circuit).
+      if (_observedRemoteDtls == null) {
+        final fps = await media.dtlsFingerprints();
+        if (fps != null) {
+          _observedRemoteDtls = List<int>.from(fps.remote);
+        }
       }
       DeliveryTiming.record('call_auth_ok', 0);
       notifyListeners();
@@ -567,6 +639,18 @@ class CallController extends ChangeNotifier {
     return e.runtimeType.toString();
   }
 
+  /// Privacy-safe abort tag: type plus a short stable message token.
+  static String _shortErrorDetail(Object e) {
+    if (e is StateError) {
+      final msg = e.message;
+      if (msg.contains('missing_remote_offer')) return 'missing_remote_offer';
+      if (msg.contains('empty_local_offer')) return 'empty_local_offer';
+      if (msg.contains('empty_local_answer')) return 'empty_local_answer';
+      return 'StateError';
+    }
+    return e.runtimeType.toString();
+  }
+
   void _beginCall() {
     _generation++;
     _ending = false;
@@ -574,6 +658,7 @@ class CallController extends ChangeNotifier {
     localMediaConnected = false;
     _localDescriptionSet = false;
     _remoteDescriptionSet = false;
+    _pendingLocalIce.clear();
     linkQuality = 'idle';
     authPhase = CallAuthPhase.idle;
     peerFingerprintHex = null;
@@ -662,6 +747,8 @@ class CallController extends ChangeNotifier {
         _processedAnswers.add(fresh.sdpAnswer!);
         if (!localMediaConnected) phase = CallPhase.connecting;
         DeliveryTiming.record('call_remote_answer_applied', 0);
+        // Start hello as soon as both SDPs exist (fingerprints are in SDP).
+        unawaited(_runAuth(generation));
       }
       _applyAuthoritativeState(fresh, localConnection: localMediaConnected);
       notifyListeners();
@@ -678,7 +765,12 @@ class CallController extends ChangeNotifier {
     final callId = session?.id;
     switch (event.kind) {
       case CallMediaEventKind.localIce:
-        if (callId == null || event.candidate == null) return;
+        if (event.candidate == null) return;
+        if (callId == null) {
+          // createOffer-before-initiate gathers ICE before the server call exists.
+          _pendingLocalIce.add(event);
+          return;
+        }
         unawaited(_submitLocalIce(gen, callId, event));
       case CallMediaEventKind.connectionConnected:
         if (!_isCurrent(gen) || _mediaReleased) return;
@@ -702,7 +794,13 @@ class CallController extends ChangeNotifier {
           unawaited(hangUp(reason: 'missing_authenticator'));
           return;
         }
-        unawaited(_runAuth(gen));
+        if (authPhase == CallAuthPhase.authenticated && callId != null) {
+          // Auth completed during SDP/ICE gather; unlock playback now that
+          // the transport is up.
+          unawaited(media.setRemotePlaybackEnabled(true));
+        } else {
+          unawaited(_runAuth(gen));
+        }
       case CallMediaEventKind.connectionFailed:
         if (!_isCurrent(gen)) return;
         // Gathering/allocate failures before both SDPs exist are not terminal.
@@ -795,10 +893,24 @@ class CallController extends ChangeNotifier {
     });
   }
 
+  Future<void> _flushPendingLocalIce(int generation, String callId) async {
+    if (_pendingLocalIce.isEmpty) return;
+    final pending = List<CallMediaEvent>.from(_pendingLocalIce);
+    _pendingLocalIce.clear();
+    for (final event in pending) {
+      if (!_isCurrent(generation) || session?.id != callId) return;
+      await _submitLocalIce(generation, callId, event);
+    }
+  }
+
   Future<void> _pullIce() async {
     final id = session?.id;
     final gen = _generation;
     if (id == null) return;
+    // During incomingRinging the PC does not exist yet. Applying (or even
+    // cursor-advancing past) early caller candidates permanently breaks video
+    // ICE when Accept is delayed by camera warm-up.
+    if (phase == CallPhase.incomingRinging) return;
     try {
       final items = await api.listIce(
         token: tokenProvider(),
@@ -853,6 +965,7 @@ class CallController extends ChangeNotifier {
     localMediaConnected = false;
     _localDescriptionSet = false;
     _remoteDescriptionSet = false;
+    _pendingLocalIce.clear();
     authPhase = CallAuthPhase.idle;
     authenticatedPeerDeviceId = null;
     peerFingerprintHex = null;

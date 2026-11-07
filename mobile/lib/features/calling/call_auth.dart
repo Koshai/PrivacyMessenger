@@ -191,14 +191,25 @@ class CallAuthRequest {
   const CallAuthRequest({
     required this.session,
     required this.myUserId,
-    required this.localDtls,
-    required this.remoteDtls,
-  });
+    this.localDtls,
+    this.remoteDtls,
+    this.resolveDtls,
+  }) : assert(
+          resolveDtls != null || (localDtls != null && remoteDtls != null),
+          'DTLS fingerprints or a resolver are required',
+        );
 
   final CallSession session;
   final String myUserId;
-  final List<int> localDtls;
-  final List<int> remoteDtls;
+
+  /// Eager fingerprints when already known (tests / confirm-only paths).
+  final List<int>? localDtls;
+  final List<int>? remoteDtls;
+
+  /// Lazy resolver so hello can be published before DTLS is read.
+  /// Video devices sometimes delay description reads; blocking hello on DTLS
+  /// caused peer_hello_timeout while the peer was still resolving fingerprints.
+  final Future<({List<int> local, List<int> remote})> Function()? resolveDtls;
 
   bool get iAmCaller => session.callerUserId == myUserId;
 }

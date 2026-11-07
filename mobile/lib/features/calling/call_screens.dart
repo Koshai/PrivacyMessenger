@@ -156,8 +156,13 @@ class ActiveCallScreen extends StatelessWidget {
                 Positioned(
                   left: 0,
                   right: 0,
-                  bottom: 32,
-                  child: _CallControls(controller: controller),
+                  // Keep above system gesture/nav insets so Accept is hittable
+                  // on tall emulators (automation was landing in the tab bar).
+                  bottom: 48,
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 24),
+                    child: _CallControls(controller: controller),
+                  ),
                 ),
               ],
             ),
