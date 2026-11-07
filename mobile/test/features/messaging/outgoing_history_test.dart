@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -77,7 +77,9 @@ void main() {
       mls: MlsSessionManager(),
       engine: engine,
       history: store,
-    )..rememberGroup(_conv, 'abc');
+    )
+      ..rememberGroup(_conv, 'abc')
+      ..bindConversationPeer(_conv, 'peer');
 
     await service.sendText(
       token: 'tok',
@@ -149,7 +151,9 @@ void main() {
       engine: engine,
       history: store,
       submitTimeout: const Duration(milliseconds: 30),
-    )..rememberGroup(_conv, 'abc');
+    )
+      ..rememberGroup(_conv, 'abc')
+      ..bindConversationPeer(_conv, 'peer');
 
     final failed = await service.sendText(
       token: 'tok',
@@ -259,3 +263,4 @@ class _ScriptedMls implements MlsGroupEncryptionService {
   @override
   Future<void> restore() => throw UnimplementedError();
 }
+

@@ -327,6 +327,7 @@ void main() {
     final commitService = _service(commit, acks: commitAcks);
     commitService.bindConversationPeer(_conv, _peer);
     commitService.rememberGroup(_conv, 'abc');
+    commitService.bindConversationPeer(_conv, _peer);
     await commitService.ingestEnvelopes(
       token: 'tok',
       myUserId: _me,
@@ -347,6 +348,7 @@ void main() {
     final applicationService = _service(application, acks: applicationAcks);
     applicationService.bindConversationPeer(_conv, _peer);
     applicationService.rememberGroup(_conv, 'abc');
+    applicationService.bindConversationPeer(_conv, _peer);
     await applicationService.ingestEnvelopes(
       token: 'tok',
       myUserId: _me,
@@ -374,6 +376,7 @@ void main() {
     final service = _service(engine, acks: acks);
     service.bindConversationPeer(_conv, _peer);
     service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
     await service.ingestEnvelopes(
       token: 'tok',
       myUserId: _me,
@@ -429,6 +432,7 @@ void main() {
     final service = _service(engine, acks: acks);
     service.bindConversationPeer(_conv, _peer);
     service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
     await service.ingestEnvelopes(
       token: 'tok',
       myUserId: _me,
@@ -474,6 +478,7 @@ void main() {
     final service = _service(engine, acks: []);
     service.bindConversationPeer(_conv, _peer);
     service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
     final views = await service.ingestEnvelopes(
       token: 'tok',
       myUserId: _me,
@@ -498,6 +503,7 @@ void main() {
     final service = _service(engine, acks: acks);
     service.bindConversationPeer(_conv, _peer);
     service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
     final views = await service.ingestEnvelopes(
       token: 'tok',
       myUserId: _me,
@@ -525,6 +531,7 @@ void main() {
     final service = _service(engine, acks: acks);
     service.bindConversationPeer(_conv, _peer);
     service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
     final views = await service.ingestEnvelopes(
       token: 'tok',
       myUserId: _me,
@@ -541,6 +548,7 @@ void main() {
     final service = _service(engine, acks: acks);
     service.bindConversationPeer(_conv, _peer);
     service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
     final envelope = _env('a', 4, MlsContentTypes.application);
     final results = await Future.wait([
       service.ingestEnvelopes(
@@ -566,6 +574,7 @@ void main() {
     final first = _service(engine, acks: firstAcks);
     first.bindConversationPeer(_conv, _peer);
     first.rememberGroup(_conv, 'abc');
+      first.bindConversationPeer(_conv, _peer);
     final failed = await first.ingestEnvelopes(
       token: 'tok',
       myUserId: _me,
@@ -581,6 +590,7 @@ void main() {
     final second = _service(engine, acks: secondAcks);
     second.bindConversationPeer(_conv, _peer);
     second.rememberGroup(_conv, 'abc');
+      second.bindConversationPeer(_conv, _peer);
     final retried = await second.ingestEnvelopes(
       token: 'tok',
       myUserId: _me,
@@ -619,6 +629,7 @@ void main() {
     final service = _service(engine, acks: acks);
     service.bindConversationPeer(_conv, _peer);
     service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
     service.keyChangeWarning =
         'Safety number changed for this contact. Verify before continuing.';
     await service.ingestEnvelopes(
@@ -656,6 +667,7 @@ void main() {
       final service = _service(engine, acks: acks, history: store);
       service.bindConversationPeer(_conv, _peer);
       service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
 
       final views = await service.ingestEnvelopes(
         token: 'tok',
@@ -682,6 +694,7 @@ void main() {
       final service = _service(engine, history: store);
       service.bindConversationPeer(_conv, _peer);
       service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
       await service.ingestEnvelopes(
         token: 'tok',
         myUserId: _me,
@@ -717,6 +730,7 @@ void main() {
       final service = _service(engine, acks: acks, history: store);
       service.bindConversationPeer(_conv, _peer);
       service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
       final envelope = _env('a', 4, MlsContentTypes.application);
       await service.ingestEnvelopes(
         token: 'tok',
@@ -726,6 +740,7 @@ void main() {
       final restarted = _service(engine, acks: acks, history: store);
       restarted.bindConversationPeer(_conv, _peer);
       restarted.rememberGroup(_conv, 'abc');
+      restarted.bindConversationPeer(_conv, _peer);
       final again = await restarted.ingestEnvelopes(
         token: 'tok',
         myUserId: _me,
@@ -752,6 +767,7 @@ void main() {
       final first = _service(engine, acks: firstAcks, history: store);
       first.bindConversationPeer(_conv, _peer);
       first.rememberGroup(_conv, 'abc');
+      first.bindConversationPeer(_conv, _peer);
       final envelope = _env('a', 4, MlsContentTypes.application);
       final failed = await first.ingestEnvelopes(
         token: 'tok',
@@ -769,6 +785,7 @@ void main() {
       final second = _service(engine, acks: secondAcks, history: store);
       second.bindConversationPeer(_conv, _peer);
       second.rememberGroup(_conv, 'abc');
+      second.bindConversationPeer(_conv, _peer);
       final retried = await second.ingestEnvelopes(
         token: 'tok',
         myUserId: _me,
@@ -791,6 +808,7 @@ void main() {
       final first = _service(engine, history: _FailOnCommit(store));
       first.bindConversationPeer(_conv, _peer);
       first.rememberGroup(_conv, 'abc');
+      first.bindConversationPeer(_conv, _peer);
       final envelope = _env('a', 4, MlsContentTypes.application);
       final interrupted = await first.ingestEnvelopes(
         token: 'tok',
@@ -808,6 +826,7 @@ void main() {
       final second = _service(engine, acks: acks, history: store);
       second.bindConversationPeer(_conv, _peer);
       second.rememberGroup(_conv, 'abc');
+      second.bindConversationPeer(_conv, _peer);
       final retried = await second.ingestEnvelopes(
         token: 'tok',
         myUserId: _me,
@@ -836,6 +855,7 @@ void main() {
       );
       service.bindConversationPeer(_conv, _peer);
       service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
       final envelope = _env('a', 4, MlsContentTypes.application);
       final waiting = await service.ingestEnvelopes(
         token: 'tok',
@@ -874,6 +894,7 @@ void main() {
       final service = _service(engine, acks: acks, history: store);
       service.bindConversationPeer(_conv, _peer);
       service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
       final views = await service.ingestEnvelopes(
         token: 'tok',
         myUserId: _me,
@@ -892,6 +913,7 @@ void main() {
       final service = _service(engine, acks: acks, history: _InsertFails());
       service.bindConversationPeer(_conv, _peer);
       service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
       final views = await service.ingestEnvelopes(
         token: 'tok',
         myUserId: _me,
@@ -909,6 +931,7 @@ void main() {
       final engine = _ScriptedMls();
       final service = _service(engine, history: store);
       service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
       final sent = await service.sendText(
         token: 'tok',
         conversationId: _conv,
@@ -934,6 +957,7 @@ void main() {
       final engine = _ScriptedMls();
       final service = _service(engine, history: store);
       service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
       await service.sendText(
         token: 'tok',
         conversationId: _conv,
@@ -958,6 +982,7 @@ void main() {
       final engine = _ScriptedMls();
       final service = _service(engine, history: _InsertFails());
       service.rememberGroup(_conv, 'abc');
+      service.bindConversationPeer(_conv, _peer);
       final failed = await service.sendText(
         token: 'tok',
         conversationId: _conv,
@@ -987,7 +1012,9 @@ void main() {
         mls: MlsSessionManager(),
         engine: engine,
         history: store,
-      )..rememberGroup(_conv, 'abc');
+      )
+        ..rememberGroup(_conv, 'abc')
+        ..bindConversationPeer(_conv, _peer);
       final failed = await service.sendText(
         token: 'tok',
         conversationId: _conv,
@@ -1066,7 +1093,9 @@ Future<_Harness> _harness({
     mls: MlsSessionManager(),
     engine: engine,
     history: _MemoryHistory(),
-  )..rememberGroup(_conv, 'abc');
+  )
+        ..rememberGroup(_conv, 'abc')
+        ..bindConversationPeer(_conv, _peer);
   final controller = ConversationController(
     api: api,
     auth: auth,
@@ -1216,6 +1245,8 @@ class _MemoryHistory implements InboundMessageHistory {
       plaintext: draft.plaintext,
       preparedCiphertext: draft.preparedCiphertext,
       mlsGroupIdHex: draft.mlsGroupIdHex,
+      outboxRecipientId: draft.outboxRecipientId,
+      outboxContentType: draft.outboxContentType,
     );
     _rows.add(record);
     return record;
@@ -1231,6 +1262,8 @@ class _MemoryHistory implements InboundMessageHistory {
     Object? conversationSeq = keepHistoryField,
     Object? preparedCiphertext = keepHistoryField,
     Object? mlsGroupIdHex = keepHistoryField,
+    Object? outboxRecipientId = keepHistoryField,
+    Object? outboxContentType = keepHistoryField,
   }) async {
     final index = _rows.indexWhere(
       (row) =>
@@ -1245,6 +1278,12 @@ class _MemoryHistory implements InboundMessageHistory {
     final nextGroup = identical(mlsGroupIdHex, keepHistoryField)
         ? current.mlsGroupIdHex
         : mlsGroupIdHex as String?;
+    final nextRecipient = identical(outboxRecipientId, keepHistoryField)
+        ? current.outboxRecipientId
+        : outboxRecipientId as String?;
+    final nextContentType = identical(outboxContentType, keepHistoryField)
+        ? current.outboxContentType
+        : outboxContentType as String?;
     final updated = LocalMessageRecord(
       ownerUserId: current.ownerUserId,
       ownerDeviceId: current.ownerDeviceId,
@@ -1263,6 +1302,8 @@ class _MemoryHistory implements InboundMessageHistory {
       plaintext: current.plaintext,
       preparedCiphertext: nextWire,
       mlsGroupIdHex: nextWire == null ? null : nextGroup,
+      outboxRecipientId: nextWire == null ? null : nextRecipient,
+      outboxContentType: nextWire == null ? null : nextContentType,
     );
     _rows[index] = updated;
     return updated;
@@ -1310,6 +1351,8 @@ class _FailOnCommit implements InboundMessageHistory {
     Object? conversationSeq = keepHistoryField,
     Object? preparedCiphertext = keepHistoryField,
     Object? mlsGroupIdHex = keepHistoryField,
+    Object? outboxRecipientId = keepHistoryField,
+    Object? outboxContentType = keepHistoryField,
   }) {
     if (mlsPhase == LocalMlsPhase.committed) {
       throw StateError('commit marker failed');
@@ -1323,6 +1366,8 @@ class _FailOnCommit implements InboundMessageHistory {
       conversationSeq: conversationSeq,
       preparedCiphertext: preparedCiphertext,
       mlsGroupIdHex: mlsGroupIdHex,
+      outboxRecipientId: outboxRecipientId,
+      outboxContentType: outboxContentType,
     );
   }
 }
@@ -1360,6 +1405,8 @@ class _InsertFails implements InboundMessageHistory {
     Object? conversationSeq = keepHistoryField,
     Object? preparedCiphertext = keepHistoryField,
     Object? mlsGroupIdHex = keepHistoryField,
+    Object? outboxRecipientId = keepHistoryField,
+    Object? outboxContentType = keepHistoryField,
   }) {
     throw const MessageHistoryNotFoundException();
   }

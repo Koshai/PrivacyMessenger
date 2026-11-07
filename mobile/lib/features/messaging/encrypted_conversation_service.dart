@@ -307,11 +307,26 @@ class EncryptedConversationService {
       );
     }
 
+    final peerId = _peerByConversation[conversationId];
+    if (peerId == null || peerId.isEmpty) {
+      span.total('send_peer_missing');
+      await _markOutgoing(
+        conversationId: conversationId,
+        clientMessageId: clientMessageId,
+        delivery: LocalMessageDelivery.blocked,
+      );
+      return pending.copyWith(
+        delivery: ChatDeliveryState.blocked,
+        error: 'Cannot send: conversation peer is not bound.',
+      );
+    }
+
     final prepared = await _prepareApplicationCiphertext(
       conversationId: conversationId,
       clientMessageId: clientMessageId,
       plaintext: plaintext,
       groupId: groupId,
+      recipientId: peerId,
       span: span,
     );
     if (prepared.blocked != null) {
@@ -347,6 +362,8 @@ class EncryptedConversationService {
         conversationSeq: envelope.conversationSeq,
         preparedCiphertext: null,
         mlsGroupIdHex: null,
+        outboxRecipientId: null,
+        outboxContentType: null,
       );
       span.lap('send_store_sent');
       span.total('send_total');
@@ -393,6 +410,8 @@ class EncryptedConversationService {
           delivery: LocalMessageDelivery.blocked,
           preparedCiphertext: null,
           mlsGroupIdHex: null,
+          outboxRecipientId: null,
+          outboxContentType: null,
         );
         MlsDiagnostics.record(stage: 'send_envelope', error: error);
         return pending.copyWith(
@@ -434,6 +453,7 @@ class EncryptedConversationService {
     required String clientMessageId,
     required String plaintext,
     required String groupId,
+    required String recipientId,
     required DeliverySpan span,
   }) {
     return _exclusive(() async {
@@ -476,11 +496,32 @@ class EncryptedConversationService {
 
       final crypto = _crypto;
       if (crypto == null) throw StateError('MLS not ready');
-      await _markOutgoing(
+      // Crash boundary: the encrypting marker must be durable before OpenMLS
+      // advances the sender ratchet. Re-read after the write to prove commit.
+      final marked = await _markOutgoing(
         conversationId: conversationId,
         clientMessageId: clientMessageId,
         delivery: LocalMessageDelivery.encrypting,
       );
+      final durable = await history?.lookupByClientMessageId(
+        conversationId: conversationId,
+        clientMessageId: clientMessageId,
+      );
+      if (marked == null ||
+          marked.delivery != LocalMessageDelivery.encrypting ||
+          durable == null ||
+          durable.delivery != LocalMessageDelivery.encrypting) {
+        await _markOutgoing(
+          conversationId: conversationId,
+          clientMessageId: clientMessageId,
+          delivery: LocalMessageDelivery.blocked,
+        );
+        return (
+          wire: null,
+          blocked:
+              'Cannot safely encrypt: encrypting marker was not durably committed.',
+        );
+      }
       try {
         final wire = await crypto.encryptApplication(
           groupIdHex: groupId,
@@ -494,6 +535,8 @@ class EncryptedConversationService {
           delivery: LocalMessageDelivery.ready,
           preparedCiphertext: ciphertext,
           mlsGroupIdHex: groupId,
+          outboxRecipientId: recipientId,
+          outboxContentType: MlsContentTypes.application,
         );
         if (stored == null || !stored.hasPreparedOutbox) {
           await _markOutgoing(
@@ -588,6 +631,8 @@ class EncryptedConversationService {
     Object? conversationSeq = keepHistoryField,
     Object? preparedCiphertext = keepHistoryField,
     Object? mlsGroupIdHex = keepHistoryField,
+    Object? outboxRecipientId = keepHistoryField,
+    Object? outboxContentType = keepHistoryField,
   }) async {
     final stored = history;
     if (stored == null) return null;
@@ -600,6 +645,8 @@ class EncryptedConversationService {
         conversationSeq: conversationSeq,
         preparedCiphertext: preparedCiphertext,
         mlsGroupIdHex: mlsGroupIdHex,
+        outboxRecipientId: outboxRecipientId,
+        outboxContentType: outboxContentType,
       );
     } catch (error) {
       MlsDiagnostics.record(stage: 'send_history', error: error);

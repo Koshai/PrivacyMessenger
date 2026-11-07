@@ -165,8 +165,10 @@ func (r *Repository) InsertEnvelope(
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			existing, loadErr := r.loadByClientID(
-				ctx, tx, envelope.ConversationID, envelope.SenderID, envelope.ClientMessageID,
+			// Unique violation aborts the transaction; reload outside it.
+			_ = tx.Rollback(ctx)
+			existing, loadErr := r.loadByClientIDPool(
+				ctx, envelope.ConversationID, envelope.SenderID, envelope.ClientMessageID,
 			)
 			if loadErr != nil {
 				return SendResult{}, fmt.Errorf("insert envelope race load: %w", loadErr)
@@ -174,9 +176,6 @@ func (r *Repository) InsertEnvelope(
 			if !bytes.Equal(existing.Ciphertext, envelope.Ciphertext) ||
 				existing.ContentType != envelope.ContentType {
 				return SendResult{}, ErrClientMessageIDConflict
-			}
-			if err := tx.Commit(ctx); err != nil {
-				return SendResult{}, err
 			}
 			return SendResult{Envelope: existing, Created: false}, nil
 		}
@@ -205,8 +204,29 @@ func (r *Repository) loadByClientID(
 	conversationID, senderID uuid.UUID,
 	clientMessageID string,
 ) (Envelope, error) {
+	return scanEnvelopeByClientID(ctx, tx, conversationID, senderID, clientMessageID)
+}
+
+func (r *Repository) loadByClientIDPool(
+	ctx context.Context,
+	conversationID, senderID uuid.UUID,
+	clientMessageID string,
+) (Envelope, error) {
+	return scanEnvelopeByClientID(ctx, r.db, conversationID, senderID, clientMessageID)
+}
+
+type envelopeRowQuerier interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func scanEnvelopeByClientID(
+	ctx context.Context,
+	q envelopeRowQuerier,
+	conversationID, senderID uuid.UUID,
+	clientMessageID string,
+) (Envelope, error) {
 	var e Envelope
-	err := tx.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		SELECT id, conversation_id, sender_id, client_message_id, ciphertext, content_type, created_at,
 		       COALESCE(conversation_seq, 0)
 		FROM message_envelopes

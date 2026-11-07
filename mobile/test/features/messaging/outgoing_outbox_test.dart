@@ -63,7 +63,9 @@ void main() {
       engine: engine,
       history: store,
       submitTimeout: submitTimeout,
-    )..rememberGroup(_conv, 'group-hex');
+    )
+      ..rememberGroup(_conv, 'group-hex')
+      ..bindConversationPeer(_conv, 'peer-user');
   }
 
   http.Response okEnvelope({
@@ -323,6 +325,8 @@ void main() {
         plaintext: 'ready',
         preparedCiphertext: const [9, 9, 9],
         mlsGroupIdHex: 'group-hex',
+        outboxRecipientId: 'peer-user',
+        outboxContentType: MlsContentTypes.application,
       ),
     );
     final engine = _ScriptedMls();
@@ -363,6 +367,8 @@ void main() {
         plaintext: 'open-me',
         preparedCiphertext: const [1, 2, 3],
         mlsGroupIdHex: 'group-hex',
+        outboxRecipientId: 'peer-user',
+        outboxContentType: MlsContentTypes.application,
       ),
     );
     final service = serviceFor(
@@ -473,6 +479,8 @@ void main() {
         plaintext: 'x',
         preparedCiphertext: const [4, 5, 6],
         mlsGroupIdHex: 'group-hex',
+        outboxRecipientId: 'peer-user',
+        outboxContentType: MlsContentTypes.application,
       ),
     );
     expect(inserted.hasPreparedOutbox, isTrue);
@@ -526,7 +534,7 @@ void main() {
     final rows = await store.listConversation(_conv);
     expect(rows.single.plaintext, 'kept');
     expect(rows.single.delivery, LocalMessageDelivery.sent);
-    expect(LocalMessageStore.schemaVersion, 3);
+    expect(LocalMessageStore.schemaVersion, 4);
 
     final withOutbox = await store.insert(
       LocalMessageDraft(
@@ -538,6 +546,8 @@ void main() {
         plaintext: 'new',
         preparedCiphertext: const [1, 2, 3],
         mlsGroupIdHex: 'group-hex',
+        outboxRecipientId: 'peer-user',
+        outboxContentType: MlsContentTypes.application,
       ),
     );
     expect(withOutbox.hasPreparedOutbox, isTrue);
