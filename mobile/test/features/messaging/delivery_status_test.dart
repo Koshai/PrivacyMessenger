@@ -33,6 +33,14 @@ void main() {
       'Failed',
     );
     expect(
+      deliveryStatusLabel(delivery: ChatDeliveryState.uncertain, isMine: true),
+      'Unconfirmed',
+    );
+    expect(
+      deliveryStatusLabel(delivery: ChatDeliveryState.blocked, isMine: true),
+      'Needs attention',
+    );
+    expect(
       deliveryStatusLabel(
         delivery: ChatDeliveryState.received,
         isMine: true,

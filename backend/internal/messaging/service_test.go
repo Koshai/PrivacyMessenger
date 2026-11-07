@@ -2,6 +2,7 @@ package messaging
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -88,7 +89,12 @@ func (m *memoryStore) InsertEnvelope(_ context.Context, envelope Envelope, recip
 	defer m.mu.Unlock()
 	key := envelope.ConversationID.String() + "|" + envelope.SenderID.String() + "|" + envelope.ClientMessageID
 	if id, ok := m.byClient[key]; ok {
-		return SendResult{Envelope: m.envelopes[id], Created: false}, nil
+		existing := m.envelopes[id]
+		if !bytesEqual(existing.Ciphertext, envelope.Ciphertext) ||
+			existing.ContentType != envelope.ContentType {
+			return SendResult{}, ErrClientMessageIDConflict
+		}
+		return SendResult{Envelope: existing, Created: false}, nil
 	}
 	m.nextSeq[envelope.ConversationID]++
 	envelope.ConversationSeq = m.nextSeq[envelope.ConversationID]
@@ -96,6 +102,18 @@ func (m *memoryStore) InsertEnvelope(_ context.Context, envelope Envelope, recip
 	m.byClient[key] = envelope.ID
 	m.deliveries[[2]uuid.UUID{envelope.ID, recipientID}] = nil
 	return SendResult{Envelope: envelope, Created: true}, nil
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *memoryStore) ListEnvelopes(_ context.Context, conversationID uuid.UUID, _ *PageCursor, limit int) ([]Envelope, error) {
@@ -168,6 +186,13 @@ func TestSendEnvelopeIdempotentByClientMessageID(t *testing.T) {
 	}
 	if first.Envelope.ID != second.Envelope.ID {
 		t.Fatal("idempotent send must return same envelope id")
+	}
+
+	_, err = service.SendEnvelope(
+		context.Background(), alice, conversation.ID, "msg-1", []byte{0x09, 0x09}, "application/opaque",
+	)
+	if !errors.Is(err, ErrClientMessageIDConflict) {
+		t.Fatalf("expected conflict for different ciphertext, got %v", err)
 	}
 }
 

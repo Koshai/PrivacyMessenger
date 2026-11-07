@@ -248,11 +248,17 @@ class ChatMessageBubble extends StatelessWidget {
                         style: Theme.of(context).textTheme.labelSmall,
                       ),
                     if (message.isMine &&
-                        message.delivery == ChatDeliveryState.failed) ...[
+                        (message.delivery == ChatDeliveryState.failed ||
+                            message.delivery ==
+                                ChatDeliveryState.uncertain)) ...[
                       const SizedBox(width: 8),
                       TextButton(
                         onPressed: onRetry,
-                        child: const Text('Retry'),
+                        child: Text(
+                          message.delivery == ChatDeliveryState.uncertain
+                              ? 'Resubmit'
+                              : 'Retry',
+                        ),
                       ),
                     ],
                   ],

@@ -6,7 +6,8 @@ import 'package:flutter/foundation.dart';
 import '../../core/crypto/encryption_service.dart';
 import '../../core/crypto/mls_session_manager.dart';
 import '../../core/crypto/protocol_messages.dart';
-import '../../core/network/api_client.dart' show ApiClient, ApiException;
+import '../../core/network/api_client.dart'
+    show ApiClient, ApiErrorKind, ApiException;
 import '../calling/call_auth.dart';
 import '../calling/call_auth_session.dart';
 import '../calling/call_binding_inbox.dart';
@@ -147,7 +148,6 @@ class EncryptedConversationService {
   final Map<String, String> _peerByConversation = {};
   final Set<String> _processedEnvelopeIds = {};
   final Map<String, StoredCallBinding> _heldBindings = {};
-  final Map<String, List<int>> _preparedApplication = {};
   final Set<String> _unresolvedEnvelopeIds = {};
   Future<void> _chain = Future<void>.value();
   bool _deviceEnrolled = false;
@@ -295,9 +295,9 @@ class EncryptedConversationService {
         clientMessageId: clientMessageId,
         plaintext: plaintext,
         createdAt: stamped,
-        delivery: LocalMessageDelivery.sending,
+        delivery: LocalMessageDelivery.preparing,
       );
-      span.lap('send_store_sending');
+      span.lap('send_store_preparing');
     } catch (error) {
       span.total('send_store_failed');
       MlsDiagnostics.record(stage: 'send_history', error: error);
@@ -307,40 +307,28 @@ class EncryptedConversationService {
       );
     }
 
-    final prepared = _preparedApplication[clientMessageId];
-    final List<int> ciphertext;
-    if (prepared != null) {
-      ciphertext = prepared;
-      span.lap('send_encrypt_reused');
-    } else {
-      try {
-        final wire = await svc.encryptApplication(
-          groupIdHex: groupId,
-          plaintext: utf8.encode(plaintext),
-        );
-        ciphertext = List<int>.from(wire.bytes);
-        _preparedApplication[clientMessageId] = ciphertext;
-        span.lap('send_encrypt');
-      } catch (error, stack) {
-        span.total('send_encrypt_failed');
-        await _markOutgoing(
-          conversationId: conversationId,
-          clientMessageId: clientMessageId,
-          delivery: LocalMessageDelivery.failed,
-        );
-        MlsDiagnostics.record(
-          stage: 'encrypt_application',
-          error: error,
-        );
-        throw MlsSendFailure(
-          'encrypt_application',
-          MlsDiagnostics.safeType(error),
-          stack,
-        );
-      }
+    final prepared = await _prepareApplicationCiphertext(
+      conversationId: conversationId,
+      clientMessageId: clientMessageId,
+      plaintext: plaintext,
+      groupId: groupId,
+      span: span,
+    );
+    if (prepared.blocked != null) {
+      span.total('send_blocked');
+      return pending.copyWith(
+        delivery: ChatDeliveryState.blocked,
+        error: prepared.blocked,
+      );
     }
+    final ciphertext = prepared.wire!;
 
     try {
+      await _markOutgoing(
+        conversationId: conversationId,
+        clientMessageId: clientMessageId,
+        delivery: LocalMessageDelivery.submitting,
+      );
       final envelope = await api
           .sendEnvelope(
             token: token,
@@ -350,7 +338,6 @@ class EncryptedConversationService {
             contentType: MlsContentTypes.application,
           )
           .timeout(submitTimeout);
-      _preparedApplication.remove(clientMessageId);
       span.lap('send_submit');
       final stored = await _markOutgoing(
         conversationId: conversationId,
@@ -358,6 +345,8 @@ class EncryptedConversationService {
         delivery: LocalMessageDelivery.sent,
         envelopeId: envelope.id,
         conversationSeq: envelope.conversationSeq,
+        preparedCiphertext: null,
+        mlsGroupIdHex: null,
       );
       span.lap('send_store_sent');
       span.total('send_total');
@@ -371,9 +360,47 @@ class EncryptedConversationService {
         isMine: true,
       );
     } on TimeoutException catch (error) {
-      // Ambiguous: the HTTP write may have landed. Keep prepared ciphertext
-      // only in memory for an explicit same-session retry. Do not claim Sent.
       span.total('send_submit_timeout');
+      await _markOutgoing(
+        conversationId: conversationId,
+        clientMessageId: clientMessageId,
+        delivery: LocalMessageDelivery.uncertain,
+      );
+      MlsDiagnostics.record(stage: 'send_envelope', error: error);
+      return pending.copyWith(
+        delivery: ChatDeliveryState.uncertain,
+        error: 'Send unconfirmed. Resubmit only with the same ciphertext.',
+      );
+    } on ApiException catch (error) {
+      if (error.kind == ApiErrorKind.timeout) {
+        span.total('send_submit_timeout');
+        await _markOutgoing(
+          conversationId: conversationId,
+          clientMessageId: clientMessageId,
+          delivery: LocalMessageDelivery.uncertain,
+        );
+        MlsDiagnostics.record(stage: 'send_envelope', error: error);
+        return pending.copyWith(
+          delivery: ChatDeliveryState.uncertain,
+          error: 'Send unconfirmed. Resubmit only with the same ciphertext.',
+        );
+      }
+      if (error.statusCode == 409) {
+        span.total('send_submit_conflict');
+        await _markOutgoing(
+          conversationId: conversationId,
+          clientMessageId: clientMessageId,
+          delivery: LocalMessageDelivery.blocked,
+          preparedCiphertext: null,
+          mlsGroupIdHex: null,
+        );
+        MlsDiagnostics.record(stage: 'send_envelope', error: error);
+        return pending.copyWith(
+          delivery: ChatDeliveryState.blocked,
+          error: 'Server rejected conflicting ciphertext for this message id.',
+        );
+      }
+      span.total('send_submit_failed');
       await _markOutgoing(
         conversationId: conversationId,
         clientMessageId: clientMessageId,
@@ -382,26 +409,123 @@ class EncryptedConversationService {
       MlsDiagnostics.record(stage: 'send_envelope', error: error);
       return pending.copyWith(
         delivery: ChatDeliveryState.failed,
-        error: 'Send timed out. Retry may resubmit.',
+        error: 'Send failed',
       );
     } catch (error) {
       span.total('send_submit_failed');
-      // Keep prepared ciphertext in memory for an explicit same-session retry.
-      // Process restart drops it; do not invent durable ciphertext persistence.
       await _markOutgoing(
         conversationId: conversationId,
         clientMessageId: clientMessageId,
         delivery: LocalMessageDelivery.failed,
       );
-      MlsDiagnostics.record(
-        stage: 'send_envelope',
-        error: error,
-      );
+      MlsDiagnostics.record(stage: 'send_envelope', error: error);
       return pending.copyWith(
         delivery: ChatDeliveryState.failed,
         error: 'Send failed',
       );
     }
+  }
+
+  /// Loads a durable outbox ciphertext or encrypts once under the MLS lock.
+  ///
+  /// Never re-encrypts when prepared bytes already exist for this client id.
+  Future<({List<int>? wire, String? blocked})> _prepareApplicationCiphertext({
+    required String conversationId,
+    required String clientMessageId,
+    required String plaintext,
+    required String groupId,
+    required DeliverySpan span,
+  }) {
+    return _exclusive(() async {
+      final existing = await history?.lookupByClientMessageId(
+        conversationId: conversationId,
+        clientMessageId: clientMessageId,
+      );
+      if (existing != null && existing.hasPreparedOutbox) {
+        span.lap('send_encrypt_reused');
+        return (
+          wire: List<int>.from(existing.preparedCiphertext!),
+          blocked: null,
+        );
+      }
+      if (existing != null && !existing.hasPreparedOutbox) {
+        // encrypting/submitting/ready/failed/uncertain/blocked without bytes
+        // means the ratchet may already have advanced. preparing/sending is
+        // the only state that has not entered the MLS encrypt call yet.
+        final mayHaveAdvanced =
+            existing.delivery == LocalMessageDelivery.encrypting ||
+            existing.delivery == LocalMessageDelivery.submitting ||
+            existing.delivery == LocalMessageDelivery.ready ||
+            existing.delivery == LocalMessageDelivery.failed ||
+            existing.delivery == LocalMessageDelivery.uncertain ||
+            existing.delivery == LocalMessageDelivery.blocked;
+        if (mayHaveAdvanced) {
+          await _markOutgoing(
+            conversationId: conversationId,
+            clientMessageId: clientMessageId,
+            delivery: LocalMessageDelivery.blocked,
+          );
+          return (
+            wire: null,
+            blocked:
+                'Cannot safely retry: prepared ciphertext is missing after an '
+                'interrupted send.',
+          );
+        }
+      }
+
+      final crypto = _crypto;
+      if (crypto == null) throw StateError('MLS not ready');
+      await _markOutgoing(
+        conversationId: conversationId,
+        clientMessageId: clientMessageId,
+        delivery: LocalMessageDelivery.encrypting,
+      );
+      try {
+        final wire = await crypto.encryptApplication(
+          groupIdHex: groupId,
+          plaintext: utf8.encode(plaintext),
+        );
+        final ciphertext = List<int>.from(wire.bytes);
+        span.lap('send_encrypt');
+        final stored = await _markOutgoing(
+          conversationId: conversationId,
+          clientMessageId: clientMessageId,
+          delivery: LocalMessageDelivery.ready,
+          preparedCiphertext: ciphertext,
+          mlsGroupIdHex: groupId,
+        );
+        if (stored == null || !stored.hasPreparedOutbox) {
+          await _markOutgoing(
+            conversationId: conversationId,
+            clientMessageId: clientMessageId,
+            delivery: LocalMessageDelivery.blocked,
+          );
+          return (
+            wire: null,
+            blocked:
+                'Cannot safely continue: prepared ciphertext was not persisted.',
+          );
+        }
+        return (wire: ciphertext, blocked: null);
+      } catch (error, stack) {
+        if (error is MlsSendFailure) rethrow;
+        span.total('send_encrypt_failed');
+        // Encrypt threw after we entered encrypting. Fail closed: do not mint
+        // another generation under this client_message_id.
+        await _markOutgoing(
+          conversationId: conversationId,
+          clientMessageId: clientMessageId,
+          delivery: LocalMessageDelivery.blocked,
+        );
+        MlsDiagnostics.record(stage: 'encrypt_application', error: error);
+        throw MlsSendFailure(
+          'encrypt_application',
+          MlsDiagnostics.safeType(error),
+          stack,
+        );
+      }
+    });
   }
 
   Future<void> _persistOutgoing({
@@ -426,6 +550,15 @@ class EncryptedConversationService {
       }
       if (existing.delivery == LocalMessageDelivery.sent ||
           existing.delivery == LocalMessageDelivery.received) {
+        return;
+      }
+      if (existing.hasPreparedOutbox ||
+          existing.delivery == LocalMessageDelivery.blocked ||
+          existing.delivery == LocalMessageDelivery.uncertain ||
+          existing.delivery == LocalMessageDelivery.ready ||
+          existing.delivery == LocalMessageDelivery.failed ||
+          existing.delivery == LocalMessageDelivery.submitting ||
+          existing.delivery == LocalMessageDelivery.encrypting) {
         return;
       }
       await stored.markInboundState(
@@ -453,6 +586,8 @@ class EncryptedConversationService {
     LocalMessageDelivery? delivery,
     Object? envelopeId = keepHistoryField,
     Object? conversationSeq = keepHistoryField,
+    Object? preparedCiphertext = keepHistoryField,
+    Object? mlsGroupIdHex = keepHistoryField,
   }) async {
     final stored = history;
     if (stored == null) return null;
@@ -463,6 +598,8 @@ class EncryptedConversationService {
         delivery: delivery,
         envelopeId: envelopeId,
         conversationSeq: conversationSeq,
+        preparedCiphertext: preparedCiphertext,
+        mlsGroupIdHex: mlsGroupIdHex,
       );
     } catch (error) {
       MlsDiagnostics.record(stage: 'send_history', error: error);
@@ -772,23 +909,63 @@ class EncryptedConversationService {
   }
 
   ChatMessageView _viewFromRecord(LocalMessageRecord record, String myUserId) {
+    final delivery = _chatDelivery(record);
     return ChatMessageView(
       clientMessageId: record.clientMessageId,
       serverEnvelopeId: record.envelopeId,
       senderId: record.senderId,
       plaintext: record.plaintext,
       createdAt: record.createdAt,
-      delivery: _chatDelivery(record.delivery),
+      delivery: delivery,
       isMine: record.senderId == myUserId,
+      error: _recoveryError(delivery),
     );
   }
 
-  ChatDeliveryState _chatDelivery(LocalMessageDelivery delivery) {
+  String? _recoveryError(ChatDeliveryState delivery) {
     switch (delivery) {
+      case ChatDeliveryState.uncertain:
+        return 'Send unconfirmed. Resubmit only with the same ciphertext.';
+      case ChatDeliveryState.blocked:
+        return 'Cannot safely retry this message.';
+      case ChatDeliveryState.failed:
+        return 'Send failed';
+      case ChatDeliveryState.sending:
+      case ChatDeliveryState.sent:
+      case ChatDeliveryState.received:
+        return null;
+    }
+  }
+
+  /// Maps durable outbox state to UI. Missing outbox bytes fail closed.
+  ChatDeliveryState _chatDelivery(LocalMessageRecord record) {
+    switch (record.delivery) {
+      case LocalMessageDelivery.preparing:
       case LocalMessageDelivery.sending:
-        return ChatDeliveryState.sending;
+      case LocalMessageDelivery.encrypting:
+        return record.hasPreparedOutbox
+            ? ChatDeliveryState.sending
+            : (record.delivery == LocalMessageDelivery.encrypting
+                ? ChatDeliveryState.blocked
+                : ChatDeliveryState.sending);
+      case LocalMessageDelivery.ready:
+        return record.hasPreparedOutbox
+            ? ChatDeliveryState.failed
+            : ChatDeliveryState.blocked;
+      case LocalMessageDelivery.submitting:
+        return record.hasPreparedOutbox
+            ? ChatDeliveryState.uncertain
+            : ChatDeliveryState.blocked;
       case LocalMessageDelivery.failed:
-        return ChatDeliveryState.failed;
+        return record.hasPreparedOutbox
+            ? ChatDeliveryState.failed
+            : ChatDeliveryState.blocked;
+      case LocalMessageDelivery.uncertain:
+        return record.hasPreparedOutbox
+            ? ChatDeliveryState.uncertain
+            : ChatDeliveryState.blocked;
+      case LocalMessageDelivery.blocked:
+        return ChatDeliveryState.blocked;
       case LocalMessageDelivery.sent:
         return ChatDeliveryState.sent;
       case LocalMessageDelivery.received:

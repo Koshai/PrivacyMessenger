@@ -276,7 +276,8 @@ func writeMessagingError(w http.ResponseWriter, err error) {
 	case errors.Is(err, messaging.ErrMlsNotEstablished):
 		http.Error(w, err.Error(), http.StatusConflict)
 	case errors.Is(err, messaging.ErrMlsAlreadySet),
-		errors.Is(err, messaging.ErrMlsGroupMismatch):
+		errors.Is(err, messaging.ErrMlsGroupMismatch),
+		errors.Is(err, messaging.ErrClientMessageIDConflict):
 		http.Error(w, err.Error(), http.StatusConflict)
 	default:
 		http.Error(w, "messaging operation failed", http.StatusInternalServerError)

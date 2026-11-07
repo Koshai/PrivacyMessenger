@@ -1214,6 +1214,8 @@ class _MemoryHistory implements InboundMessageHistory {
       delivery: draft.delivery,
       mlsPhase: draft.mlsPhase,
       plaintext: draft.plaintext,
+      preparedCiphertext: draft.preparedCiphertext,
+      mlsGroupIdHex: draft.mlsGroupIdHex,
     );
     _rows.add(record);
     return record;
@@ -1227,6 +1229,8 @@ class _MemoryHistory implements InboundMessageHistory {
     LocalMessageDelivery? delivery,
     Object? envelopeId = keepHistoryField,
     Object? conversationSeq = keepHistoryField,
+    Object? preparedCiphertext = keepHistoryField,
+    Object? mlsGroupIdHex = keepHistoryField,
   }) async {
     final index = _rows.indexWhere(
       (row) =>
@@ -1235,6 +1239,12 @@ class _MemoryHistory implements InboundMessageHistory {
     );
     if (index < 0) throw const MessageHistoryNotFoundException();
     final current = _rows[index];
+    final nextWire = identical(preparedCiphertext, keepHistoryField)
+        ? current.preparedCiphertext
+        : preparedCiphertext as List<int>?;
+    final nextGroup = identical(mlsGroupIdHex, keepHistoryField)
+        ? current.mlsGroupIdHex
+        : mlsGroupIdHex as String?;
     final updated = LocalMessageRecord(
       ownerUserId: current.ownerUserId,
       ownerDeviceId: current.ownerDeviceId,
@@ -1251,6 +1261,8 @@ class _MemoryHistory implements InboundMessageHistory {
       delivery: delivery ?? current.delivery,
       mlsPhase: mlsPhase ?? current.mlsPhase,
       plaintext: current.plaintext,
+      preparedCiphertext: nextWire,
+      mlsGroupIdHex: nextWire == null ? null : nextGroup,
     );
     _rows[index] = updated;
     return updated;
@@ -1296,6 +1308,8 @@ class _FailOnCommit implements InboundMessageHistory {
     LocalMessageDelivery? delivery,
     Object? envelopeId = keepHistoryField,
     Object? conversationSeq = keepHistoryField,
+    Object? preparedCiphertext = keepHistoryField,
+    Object? mlsGroupIdHex = keepHistoryField,
   }) {
     if (mlsPhase == LocalMlsPhase.committed) {
       throw StateError('commit marker failed');
@@ -1307,6 +1321,8 @@ class _FailOnCommit implements InboundMessageHistory {
       delivery: delivery,
       envelopeId: envelopeId,
       conversationSeq: conversationSeq,
+      preparedCiphertext: preparedCiphertext,
+      mlsGroupIdHex: mlsGroupIdHex,
     );
   }
 }
@@ -1342,6 +1358,8 @@ class _InsertFails implements InboundMessageHistory {
     LocalMessageDelivery? delivery,
     Object? envelopeId = keepHistoryField,
     Object? conversationSeq = keepHistoryField,
+    Object? preparedCiphertext = keepHistoryField,
+    Object? mlsGroupIdHex = keepHistoryField,
   }) {
     throw const MessageHistoryNotFoundException();
   }

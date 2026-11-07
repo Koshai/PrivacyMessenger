@@ -42,7 +42,8 @@ Allowed content types:
 - `application/octet-stream`
 
 - `201` created
-- `200` idempotent replay of the same `(conversation, sender, client_message_id)`
+- `200` idempotent replay of the same `(conversation, sender, client_message_id)` when ciphertext and content type match exactly
+- `409` if the same `client_message_id` is replayed with different ciphertext or content type
 - `409` if `application/mls-message` is sent before MLS group mapping exists
 
 Ordering: clients must process envelopes by `created_at` ascending (and `seq` when present). Welcome before application ciphertext for joiners.

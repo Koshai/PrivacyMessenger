@@ -16,6 +16,9 @@ var (
 	ErrMlsNotEstablished   = errors.New("mls group not established")
 	ErrMlsAlreadySet       = errors.New("mls group already established")
 	ErrMlsGroupMismatch    = errors.New("mls group mismatch")
+	// ErrClientMessageIDConflict is returned when a replay uses the same
+	// client_message_id with different ciphertext or content type.
+	ErrClientMessageIDConflict = errors.New("client message id conflict")
 )
 
 // Envelope is opaque ciphertext only. The backend must never interpret payload bytes.

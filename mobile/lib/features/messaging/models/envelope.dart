@@ -85,12 +85,20 @@ class ConversationInfo {
   }
 }
 
-enum ChatDeliveryState { sending, sent, failed, received }
+enum ChatDeliveryState {
+  sending,
+  sent,
+  failed,
+  uncertain,
+  blocked,
+  received,
+}
 
 /// Status text for one bubble.
 ///
-/// Outgoing messages use Sending, Sent, and Failed. Incoming messages use
-/// Received. A received message never uses the outgoing Sent label.
+/// Outgoing messages use Sending, Sent, Failed, Unconfirmed, and Needs
+/// attention. Incoming messages use Received. A received message never uses
+/// the outgoing Sent label.
 String? deliveryStatusLabel({
   required ChatDeliveryState delivery,
   required bool isMine,
@@ -102,6 +110,10 @@ String? deliveryStatusLabel({
       return isMine ? 'Sent' : null;
     case ChatDeliveryState.failed:
       return isMine ? 'Failed' : null;
+    case ChatDeliveryState.uncertain:
+      return isMine ? 'Unconfirmed' : null;
+    case ChatDeliveryState.blocked:
+      return isMine ? 'Needs attention' : null;
     case ChatDeliveryState.received:
       return isMine ? null : 'Received';
   }

@@ -117,7 +117,7 @@ void main() {
     expect(views.last.isMine, isFalse);
   });
 
-  test('ambiguous submit timeout keeps Failed without claiming Sent', () async {
+  test('ambiguous submit timeout stays Uncertain without claiming Sent', () async {
     final store = await LocalMessageStore.open(
       userId: _me,
       deviceId: _device,
@@ -158,13 +158,12 @@ void main() {
       plaintext: 'maybe',
       clientMessageId: 'out-timeout',
     );
-    expect(failed.delivery, ChatDeliveryState.failed);
-    expect(failed.error, contains('timed out'));
+    expect(failed.delivery, ChatDeliveryState.uncertain);
+    expect(failed.error, contains('unconfirmed'));
     expect(engine.encryptCalls, 1);
-    expect(
-      (await store.listConversation(_conv)).single.delivery,
-      LocalMessageDelivery.failed,
-    );
+    final row = (await store.listConversation(_conv)).single;
+    expect(row.delivery, LocalMessageDelivery.uncertain);
+    expect(row.hasPreparedOutbox, isTrue);
   });
 }
 

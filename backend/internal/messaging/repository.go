@@ -1,12 +1,14 @@
 package messaging
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -117,6 +119,10 @@ func (r *Repository) InsertEnvelope(
 	// Idempotent fast-path before allocating a sequence number.
 	existing, err := r.loadByClientID(ctx, tx, envelope.ConversationID, envelope.SenderID, envelope.ClientMessageID)
 	if err == nil {
+		if !bytes.Equal(existing.Ciphertext, envelope.Ciphertext) ||
+			existing.ContentType != envelope.ContentType {
+			return SendResult{}, ErrClientMessageIDConflict
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return SendResult{}, err
 		}
@@ -157,6 +163,23 @@ func (r *Repository) InsertEnvelope(
 	`, envelope.ID, envelope.ConversationID, envelope.SenderID, envelope.ClientMessageID,
 		envelope.Ciphertext, envelope.ContentType, envelope.CreatedAt, envelope.ConversationSeq)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			existing, loadErr := r.loadByClientID(
+				ctx, tx, envelope.ConversationID, envelope.SenderID, envelope.ClientMessageID,
+			)
+			if loadErr != nil {
+				return SendResult{}, fmt.Errorf("insert envelope race load: %w", loadErr)
+			}
+			if !bytes.Equal(existing.Ciphertext, envelope.Ciphertext) ||
+				existing.ContentType != envelope.ContentType {
+				return SendResult{}, ErrClientMessageIDConflict
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return SendResult{}, err
+			}
+			return SendResult{Envelope: existing, Created: false}, nil
+		}
 		return SendResult{}, fmt.Errorf("insert envelope: %w", err)
 	}
 

@@ -25,7 +25,7 @@ class LocalMessageStore implements InboundMessageHistory {
   });
 
   /// Current on-disk schema. Migrations may only add objects.
-  static const schemaVersion = 2;
+  static const schemaVersion = 3;
 
   static const _messagesTable = 'local_messages';
   static const _metaTable = 'message_store_meta';
@@ -164,7 +164,11 @@ class LocalMessageStore implements InboundMessageHistory {
         }
         final record = _recordFromDraft(draft, createdAt);
         try {
-          await txn.insert(_messagesTable, await _encryptedRow(record));
+          final written = await _encryptedRow(record);
+          if (record.hasPreparedOutbox) {
+            written.addAll(await _outboxColumns(record));
+          }
+          await txn.insert(_messagesTable, written);
         } on DatabaseException catch (error) {
           if (error.isUniqueConstraintError()) {
             throw const MessageHistoryConflictException();
@@ -187,6 +191,8 @@ class LocalMessageStore implements InboundMessageHistory {
     Object? envelopeId = _unchanged,
     Object? conversationSeq = _unchanged,
     Object? mlsPhase = _unchanged,
+    Object? preparedCiphertext = _unchanged,
+    Object? mlsGroupIdHex = _unchanged,
   }) {
     return _enqueue(() async {
       final db = _requireDb();
@@ -211,6 +217,17 @@ class LocalMessageStore implements InboundMessageHistory {
         final nextPhase = mlsPhase == _unchanged
             ? current.mlsPhase
             : _optionalPhase(mlsPhase);
+        final nextWire = preparedCiphertext == _unchanged
+            ? current.preparedCiphertext
+            : _optionalWire(preparedCiphertext);
+        final nextGroup = mlsGroupIdHex == _unchanged
+            ? current.mlsGroupIdHex
+            : _optionalText(mlsGroupIdHex, 'mlsGroupIdHex');
+        if (nextWire != null && (nextGroup == null || nextGroup.isEmpty)) {
+          throw ArgumentError(
+            'mlsGroupIdHex is required when prepared ciphertext is set',
+          );
+        }
         if (nextEnvelope != null) {
           final occupied = await _rowByEnvelope(txn, nextEnvelope);
           final occupiedClient = occupied?['client_message_id'];
@@ -232,8 +249,13 @@ class LocalMessageStore implements InboundMessageHistory {
           delivery: delivery ?? current.delivery,
           mlsPhase: nextPhase,
           plaintext: current.plaintext,
+          preparedCiphertext: nextWire,
+          mlsGroupIdHex: nextWire == null ? null : nextGroup,
         );
         final written = await _encryptedRow(updated);
+        if (preparedCiphertext != _unchanged || mlsGroupIdHex != _unchanged) {
+          written.addAll(await _outboxColumns(updated));
+        }
         int count;
         try {
           count = await txn.update(
@@ -264,6 +286,8 @@ class LocalMessageStore implements InboundMessageHistory {
     LocalMessageDelivery? delivery,
     Object? envelopeId = keepHistoryField,
     Object? conversationSeq = keepHistoryField,
+    Object? preparedCiphertext = keepHistoryField,
+    Object? mlsGroupIdHex = keepHistoryField,
   }) {
     return update(
       conversationId: conversationId,
@@ -275,6 +299,12 @@ class LocalMessageStore implements InboundMessageHistory {
       conversationSeq: identical(conversationSeq, keepHistoryField)
           ? _unchanged
           : conversationSeq,
+      preparedCiphertext: identical(preparedCiphertext, keepHistoryField)
+          ? _unchanged
+          : preparedCiphertext,
+      mlsGroupIdHex: identical(mlsGroupIdHex, keepHistoryField)
+          ? _unchanged
+          : mlsGroupIdHex,
     );
   }
 
@@ -526,6 +556,32 @@ class LocalMessageStore implements InboundMessageHistory {
         );
       }
     }
+    if (from < 3) {
+      final columns = await db.rawQuery('PRAGMA table_info($_messagesTable)');
+      final names = {
+        for (final row in columns) row['name'] as String,
+      };
+      if (!names.contains('outbox_nonce')) {
+        await db.execute(
+          'ALTER TABLE $_messagesTable ADD COLUMN outbox_nonce BLOB',
+        );
+      }
+      if (!names.contains('outbox_mac')) {
+        await db.execute(
+          'ALTER TABLE $_messagesTable ADD COLUMN outbox_mac BLOB',
+        );
+      }
+      if (!names.contains('outbox_ciphertext')) {
+        await db.execute(
+          'ALTER TABLE $_messagesTable ADD COLUMN outbox_ciphertext BLOB',
+        );
+      }
+      if (!names.contains('mls_group_id_hex')) {
+        await db.execute(
+          'ALTER TABLE $_messagesTable ADD COLUMN mls_group_id_hex TEXT',
+        );
+      }
+    }
     await db.rawInsert(
       '''
       INSERT INTO $_metaTable (meta_key, meta_value)
@@ -684,6 +740,8 @@ class LocalMessageStore implements InboundMessageHistory {
       delivery: draft.delivery,
       mlsPhase: draft.mlsPhase,
       plaintext: draft.plaintext,
+      preparedCiphertext: draft.preparedCiphertext,
+      mlsGroupIdHex: draft.mlsGroupIdHex,
     );
   }
 
@@ -724,6 +782,42 @@ class LocalMessageStore implements InboundMessageHistory {
     };
   }
 
+  /// Encrypts MLS wire bytes separately from plaintext history.
+  ///
+  /// Outbox columns are omitted from plaintext updates so a delivery change
+  /// does not rewrite ciphertext. Clearing uses explicit null columns.
+  Future<Map<String, Object?>> _outboxColumns(LocalMessageRecord record) async {
+    final wire = record.preparedCiphertext;
+    if (wire == null || wire.isEmpty) {
+      return {
+        'outbox_nonce': null,
+        'outbox_mac': null,
+        'outbox_ciphertext': null,
+        'mls_group_id_hex': null,
+      };
+    }
+    final group = record.mlsGroupIdHex;
+    if (group == null || group.isEmpty) {
+      throw ArgumentError('mlsGroupIdHex is required for outbox persistence');
+    }
+    final box = await _aes.encrypt(
+      wire,
+      secretKey: SecretKey(_requireKey()),
+      aad: _outboxAssociatedData(
+        conversationId: record.conversationId,
+        clientMessageId: record.clientMessageId,
+        senderId: record.senderId,
+        mlsGroupIdHex: group,
+      ),
+    );
+    return {
+      'outbox_nonce': Uint8List.fromList(box.nonce),
+      'outbox_mac': Uint8List.fromList(box.mac.bytes),
+      'outbox_ciphertext': Uint8List.fromList(box.cipherText),
+      'mls_group_id_hex': group,
+    };
+  }
+
   Future<LocalMessageRecord> _decryptRow(Map<String, Object?> row) async {
     final record = _readMetadata(row);
     final nonce = _blob(row['nonce']);
@@ -742,9 +836,59 @@ class LocalMessageStore implements InboundMessageHistory {
     } catch (_) {
       throw const MessageHistoryCorruptException();
     }
+    final String plaintext;
     try {
-      return record._withPlaintext(utf8.decode(clear));
+      plaintext = utf8.decode(clear);
     } on FormatException {
+      throw const MessageHistoryCorruptException();
+    }
+    final outbox = await _decryptOutbox(row, record);
+    return record._withPlaintext(plaintext)._withOutbox(
+      preparedCiphertext: outbox.wire,
+      mlsGroupIdHex: outbox.groupId,
+    );
+  }
+
+  Future<({List<int>? wire, String? groupId})> _decryptOutbox(
+    Map<String, Object?> row,
+    LocalMessageRecord record,
+  ) async {
+    final nonceRaw = row['outbox_nonce'];
+    final macRaw = row['outbox_mac'];
+    final cipherRaw = row['outbox_ciphertext'];
+    final groupRaw = row['mls_group_id_hex'];
+    final anyPresent =
+        nonceRaw != null || macRaw != null || cipherRaw != null || groupRaw != null;
+    if (!anyPresent) {
+      return (wire: null, groupId: null);
+    }
+    if (nonceRaw == null ||
+        macRaw == null ||
+        cipherRaw == null ||
+        groupRaw is! String ||
+        groupRaw.isEmpty) {
+      throw const MessageHistoryCorruptException();
+    }
+    final nonce = _blob(nonceRaw);
+    final mac = _blob(macRaw);
+    final ciphertext = _blob(cipherRaw);
+    if (nonce.isEmpty || mac.isEmpty || ciphertext.isEmpty) {
+      throw const MessageHistoryCorruptException();
+    }
+    try {
+      final wire = await _aes.decrypt(
+        SecretBox(ciphertext, nonce: nonce, mac: Mac(mac)),
+        secretKey: SecretKey(_requireKey()),
+        aad: _outboxAssociatedData(
+          conversationId: record.conversationId,
+          clientMessageId: record.clientMessageId,
+          senderId: record.senderId,
+          mlsGroupIdHex: groupRaw,
+        ),
+      );
+      if (wire.isEmpty) throw const MessageHistoryCorruptException();
+      return (wire: List<int>.from(wire), groupId: groupRaw);
+    } catch (_) {
       throw const MessageHistoryCorruptException();
     }
   }
@@ -813,6 +957,33 @@ class LocalMessageStore implements InboundMessageHistory {
     return builder.toBytes();
   }
 
+  static Uint8List _outboxAssociatedData({
+    required String conversationId,
+    required String clientMessageId,
+    required String senderId,
+    required String mlsGroupIdHex,
+  }) {
+    final builder = BytesBuilder(copy: false);
+    void add(String value) {
+      final bytes = utf8.encode(value);
+      if (bytes.length > 0xffffff) {
+        throw const MessageHistoryCorruptException();
+      }
+      builder
+        ..addByte((bytes.length >> 16) & 0xff)
+        ..addByte((bytes.length >> 8) & 0xff)
+        ..addByte(bytes.length & 0xff)
+        ..add(bytes);
+    }
+
+    add('outbox-v1');
+    add(conversationId);
+    add(clientMessageId);
+    add(senderId);
+    add(mlsGroupIdHex);
+    return builder.toBytes();
+  }
+
   static String _canonicalTime(DateTime value) =>
       value.toUtc().toIso8601String();
 
@@ -876,6 +1047,25 @@ class LocalMessageStore implements InboundMessageHistory {
     }
     _checkSeq(value);
     return value;
+  }
+
+  static List<int>? _optionalWire(Object? value) {
+    if (value == null) return null;
+    if (value is! List<int>) {
+      throw ArgumentError.value(
+        value,
+        'preparedCiphertext',
+        'prepared ciphertext must be bytes',
+      );
+    }
+    if (value.isEmpty) {
+      throw ArgumentError.value(
+        value,
+        'preparedCiphertext',
+        'prepared ciphertext is empty',
+      );
+    }
+    return List<int>.from(value);
   }
 
   static String _text(Object? value) {
@@ -944,7 +1134,22 @@ class LocalMessageStore implements InboundMessageHistory {
 /// Sentinel for [LocalMessageStore.update] arguments that should stay as stored.
 const Object _unchanged = Object();
 
-enum LocalMessageDelivery { sending, sent, failed, received }
+/// Outgoing outbox lifecycle plus inbound received.
+///
+/// Legacy [sending] remains readable. New writes use preparing → ready →
+/// submitting → sent, or failed / uncertain / blocked.
+enum LocalMessageDelivery {
+  sending,
+  preparing,
+  encrypting,
+  ready,
+  submitting,
+  sent,
+  failed,
+  uncertain,
+  blocked,
+  received,
+}
 
 /// MLS progress for an inbound application message. Delivery is separate.
 enum LocalMlsPhase { inspected, committed }
@@ -970,6 +1175,8 @@ abstract interface class InboundMessageHistory {
     LocalMessageDelivery? delivery,
     Object? envelopeId = keepHistoryField,
     Object? conversationSeq = keepHistoryField,
+    Object? preparedCiphertext = keepHistoryField,
+    Object? mlsGroupIdHex = keepHistoryField,
   });
 }
 
@@ -990,6 +1197,8 @@ class LocalMessageRecord {
     required this.delivery,
     required this.mlsPhase,
     required this.plaintext,
+    this.preparedCiphertext,
+    this.mlsGroupIdHex,
   });
 
   final String ownerUserId;
@@ -1003,6 +1212,16 @@ class LocalMessageRecord {
   final LocalMessageDelivery delivery;
   final LocalMlsPhase? mlsPhase;
   final String plaintext;
+
+  /// Decrypted MLS application wire bytes when an outbox row is present.
+  final List<int>? preparedCiphertext;
+  final String? mlsGroupIdHex;
+
+  bool get hasPreparedOutbox =>
+      preparedCiphertext != null &&
+      preparedCiphertext!.isNotEmpty &&
+      mlsGroupIdHex != null &&
+      mlsGroupIdHex!.isNotEmpty;
 
   DateTime get createdAt => DateTime.parse(createdAtRaw).toUtc();
 
@@ -1019,13 +1238,37 @@ class LocalMessageRecord {
       delivery: delivery,
       mlsPhase: mlsPhase,
       plaintext: value,
+      preparedCiphertext: preparedCiphertext,
+      mlsGroupIdHex: mlsGroupIdHex,
+    );
+  }
+
+  LocalMessageRecord _withOutbox({
+    List<int>? preparedCiphertext,
+    String? mlsGroupIdHex,
+  }) {
+    return LocalMessageRecord(
+      ownerUserId: ownerUserId,
+      ownerDeviceId: ownerDeviceId,
+      conversationId: conversationId,
+      senderId: senderId,
+      clientMessageId: clientMessageId,
+      envelopeId: envelopeId,
+      conversationSeq: conversationSeq,
+      createdAtRaw: createdAtRaw,
+      delivery: delivery,
+      mlsPhase: mlsPhase,
+      plaintext: plaintext,
+      preparedCiphertext: preparedCiphertext,
+      mlsGroupIdHex: mlsGroupIdHex,
     );
   }
 
   @override
   String toString() =>
       'LocalMessageRecord(conversationId: $conversationId, '
-      'clientMessageId: $clientMessageId, delivery: ${delivery.name})';
+      'clientMessageId: $clientMessageId, delivery: ${delivery.name}, '
+      'outbox: $hasPreparedOutbox)';
 }
 
 class LocalMessageDraft {
@@ -1039,6 +1282,8 @@ class LocalMessageDraft {
     this.envelopeId,
     this.conversationSeq,
     this.mlsPhase,
+    this.preparedCiphertext,
+    this.mlsGroupIdHex,
   });
 
   final String conversationId;
@@ -1050,6 +1295,8 @@ class LocalMessageDraft {
   final LocalMessageDelivery delivery;
   final LocalMlsPhase? mlsPhase;
   final String plaintext;
+  final List<int>? preparedCiphertext;
+  final String? mlsGroupIdHex;
 
   @override
   String toString() =>

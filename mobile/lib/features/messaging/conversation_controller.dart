@@ -233,7 +233,9 @@ class ConversationController extends ChangeNotifier {
           (message) =>
               message.delivery == ChatDeliveryState.sending ||
               (message.isMine &&
-                  message.delivery == ChatDeliveryState.failed &&
+                  (message.delivery == ChatDeliveryState.failed ||
+                      message.delivery == ChatDeliveryState.uncertain ||
+                      message.delivery == ChatDeliveryState.blocked) &&
                   !stored.any(
                     (row) => row.clientMessageId == message.clientMessageId,
                   )),
@@ -365,9 +367,12 @@ class ConversationController extends ChangeNotifier {
     final idx = messages.indexWhere((m) => m.clientMessageId == clientMessageId);
     if (idx < 0) return;
     final existing = messages[idx];
-    if (existing.delivery != ChatDeliveryState.failed) return;
-    // Explicit user retry only. After process restart there is no durable
-    // prepared ciphertext; a new encrypt may be used with the same client id.
+    // Explicit user action only. failed/uncertain resubmit durable ciphertext.
+    // blocked must not re-encrypt under the same client_message_id.
+    if (existing.delivery != ChatDeliveryState.failed &&
+        existing.delivery != ChatDeliveryState.uncertain) {
+      return;
+    }
     await send(existing.plaintext, clientMessageId: clientMessageId);
   }
 
