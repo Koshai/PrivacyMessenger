@@ -224,7 +224,9 @@ class WebRtcCallService implements CallService {
     for (final track in _remoteStream?.getTracks() ?? const <MediaStreamTrack>[]) {
       track.enabled = enabled;
     }
-    _remoteRenderer.srcObject = enabled ? _remoteStream : null;
+    if (_renderersReady) {
+      _remoteRenderer.srcObject = enabled ? _remoteStream : null;
+    }
   }
 
   Future<void> _noteRemoteFingerprint() async {
@@ -255,11 +257,13 @@ class WebRtcCallService implements CallService {
     _pc = null;
     _remoteStream = null;
     _remotePlayback = false;
-    _localRenderer.srcObject = null;
-    _remoteRenderer.srcObject = null;
     _videoActive = false;
     _iceSeq = 0;
+    // flutter_webrtc rejects srcObject until initialize(); prepare calls
+    // disposeMedia before the first _ensureRenderers, so guard the clear.
     if (_renderersReady) {
+      _localRenderer.srcObject = null;
+      _remoteRenderer.srcObject = null;
       await _localRenderer.dispose();
       await _remoteRenderer.dispose();
       _localRenderer = RTCVideoRenderer();

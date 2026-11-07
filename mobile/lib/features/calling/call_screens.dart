@@ -320,15 +320,31 @@ class CallHost extends StatefulWidget {
 }
 
 class _CallHostState extends State<CallHost> with WidgetsBindingObserver {
+  OverlayEntry? _callOverlay;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    widget.controller.addListener(_syncCallOverlay);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncCallOverlay());
+  }
+
+  @override
+  void didUpdateWidget(covariant CallHost oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_syncCallOverlay);
+      widget.controller.addListener(_syncCallOverlay);
+      _syncCallOverlay();
+    }
   }
 
   @override
   void dispose() {
+    widget.controller.removeListener(_syncCallOverlay);
     WidgetsBinding.instance.removeObserver(this);
+    _removeCallOverlay();
     super.dispose();
   }
 
@@ -337,20 +353,34 @@ class _CallHostState extends State<CallHost> with WidgetsBindingObserver {
     unawaited(widget.controller.onAppLifecycle(state));
   }
 
+  void _syncCallOverlay() {
+    if (!mounted) return;
+    final active = widget.controller.phase != CallPhase.idle;
+    if (!active) {
+      _removeCallOverlay();
+      return;
+    }
+    final overlay = Overlay.maybeOf(context, rootOverlay: true);
+    if (overlay == null) return;
+    if (_callOverlay == null) {
+      _callOverlay = OverlayEntry(
+        builder: (context) => ActiveCallScreen(controller: widget.controller),
+      );
+      overlay.insert(_callOverlay!);
+    } else {
+      _callOverlay!.markNeedsBuild();
+    }
+  }
+
+  void _removeCallOverlay() {
+    _callOverlay?.remove();
+    _callOverlay = null;
+  }
+
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: widget.controller,
-      builder: (context, _) {
-        final active = widget.controller.phase != CallPhase.idle;
-        return Stack(
-          children: [
-            widget.child,
-            if (active)
-              Positioned.fill(child: ActiveCallScreen(controller: widget.controller)),
-          ],
-        );
-      },
-    );
+    // Call UI is inserted on the root Overlay so it covers Navigator.push
+    // conversation routes. A local Stack sits under those routes and cannot.
+    return widget.child;
   }
 }

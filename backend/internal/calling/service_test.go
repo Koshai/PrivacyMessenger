@@ -118,6 +118,45 @@ func TestPrivacyErrorsUnified(t *testing.T) {
 	}
 }
 
+func TestDeclineAndCancelEndRinging(t *testing.T) {
+	svc, alice, bob, aliceDev, _ := newTestService(t)
+	ctx := context.Background()
+
+	ring, err := svc.Initiate(ctx, alice, aliceDev, bob, MediaAudio, "decl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended, err := svc.Decline(ctx, bob, ring.Session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ended.State != StateEnded || ended.EndReason == nil || *ended.EndReason != EndDeclined {
+		t.Fatalf("decline: state=%s reason=%v", ended.State, ended.EndReason)
+	}
+	if ended.SDPOffer != nil || ended.SDPAnswer != nil {
+		t.Fatal("decline must clear sdp")
+	}
+
+	ring2, err := svc.Initiate(ctx, alice, aliceDev, bob, MediaVideo, "canc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = svc.SetOffer(ctx, alice, ring2.Session.ID, "offer")
+	cancelled, err := svc.Cancel(ctx, alice, ring2.Session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.State != StateEnded || cancelled.EndReason == nil || *cancelled.EndReason != EndCancelled {
+		t.Fatalf("cancel: state=%s reason=%v", cancelled.State, cancelled.EndReason)
+	}
+	if cancelled.SDPOffer != nil {
+		t.Fatal("cancel must clear offer")
+	}
+	if _, err := svc.Cancel(ctx, bob, ring2.Session.ID); err == nil {
+		t.Fatal("callee must not cancel")
+	}
+}
+
 func TestHangupClearsSignalingAtomically(t *testing.T) {
 	svc, alice, bob, aliceDev, bobDev := newTestService(t)
 	ctx := context.Background()

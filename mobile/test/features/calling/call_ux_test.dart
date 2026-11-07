@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:private_messenger/features/calling/call_auth.dart';
 import 'package:private_messenger/features/calling/call_controller.dart';
 import 'package:private_messenger/features/calling/call_platform.dart';
 import 'package:private_messenger/features/calling/call_screens.dart';
@@ -65,7 +66,7 @@ void main() {
     expect(find.text('Incoming call'), findsOneWidget);
 
     controller.phase = CallPhase.connected;
-    controller.authPhase = 'authenticated';
+    controller.authPhase = CallAuthPhase.authenticated;
     controller.linkQuality = 'good';
     controller.notifyListeners();
     await tester.pump();
@@ -73,5 +74,52 @@ void main() {
     expect(find.text('Speaker'), findsOneWidget);
     expect(find.text('Hang up'), findsOneWidget);
     expect(find.textContaining('Connection good'), findsOneWidget);
+  });
+
+  testWidgets('CallHost overlays a pushed conversation route', (tester) async {
+    final controller = CallController(
+      api: CallingApiClient(
+        client: MockClient((_) async => http.Response('{}', 200)),
+        baseUri: Uri.parse('http://example.test'),
+      ),
+      media: FakeCallService(),
+      myUserId: 'alice',
+      tokenProvider: () => 'tok',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CallHost(
+          controller: controller,
+          child: Builder(
+            builder: (context) => Scaffold(
+              body: TextButton(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const Scaffold(body: Text('conversation')),
+                    ),
+                  );
+                },
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    expect(find.text('conversation'), findsOneWidget);
+
+    controller.phase = CallPhase.outgoingRinging;
+    controller.notifyListeners();
+    await tester.pump();
+    expect(find.text('Calling…'), findsOneWidget);
+    expect(find.text('conversation'), findsOneWidget);
+
+    controller.phase = CallPhase.idle;
+    controller.notifyListeners();
+    await tester.pump();
+    expect(find.text('Calling…'), findsNothing);
   });
 }
