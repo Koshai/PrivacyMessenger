@@ -195,6 +195,50 @@ void main() {
     await controller.onDtlsRestart(List<int>.filled(32, 9));
     expect(hungUp, isTrue);
   });
+
+  test('prior-call DTLS pin does not end the next call on Accept', () async {
+    // Regression: _observedRemoteDtls survived hangup; the next applyRemoteOffer
+    // fingerprint looked like a mid-call DTLS restart and hung up immediately.
+    final media = FakeCallService();
+    var hangups = 0;
+    final client = MockClient((request) async {
+      if (request.url.path.endsWith('/hangup')) {
+        hangups++;
+        return http.Response(jsonEncode(_session(state: 'ended')), 200);
+      }
+      if (request.url.path == '/calls/active') {
+        return http.Response(jsonEncode({'call': _session(state: 'accepted')}), 200);
+      }
+      if (request.url.path.endsWith('/connected')) {
+        return http.Response(jsonEncode(_session(state: 'connected')), 200);
+      }
+      return http.Response(jsonEncode({'candidates': []}), 200);
+    });
+    final controller = CallController(
+      api: CallingApiClient(client: client, baseUri: Uri.parse('http://example.test')),
+      media: media,
+      myUserId: 'alice',
+      tokenProvider: () => 'tok',
+      requestPermissions: (_) async => true,
+      authenticatePeer: (_) async => const CallAuthOutcome(phase: CallAuthPhase.authenticated),
+    );
+    controller.phase = CallPhase.connecting;
+    controller.session = CallSession.fromJson(_session(state: 'accepted'));
+    await controller.startListening();
+    media.emitConnected();
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    expect(controller.authPhase, CallAuthPhase.authenticated);
+    await controller.hangUp();
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    hangups = 0;
+
+    // Next call: fingerprint event before this call's auth must be ignored.
+    controller.phase = CallPhase.connecting;
+    controller.session = CallSession.fromJson(_session(state: 'accepted'));
+    await controller.onDtlsRestart(List<int>.filled(32, 9));
+    expect(hangups, 0);
+    expect(controller.phase, CallPhase.connecting);
+  });
 }
 
 Map<String, dynamic> _session({String state = 'accepted'}) => {

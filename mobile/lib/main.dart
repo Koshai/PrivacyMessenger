@@ -218,6 +218,9 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
           pipeline: pipeline,
           inbox: _bindingInbox,
           myUserId: () => widget.authController.state.userId ?? '',
+          ensureMls: () async {
+            await widget.mls.ensureReady(widget.authController);
+          },
         );
         return CallAuthSession(
           api: callingApi,

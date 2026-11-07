@@ -87,7 +87,11 @@ void main() {
     addTearDown(media.close);
     await controller.startListening();
     controller.phase = CallPhase.connecting;
-    controller.session = CallSession.fromJson(_json(state: 'accepted'));
+    controller.session = CallSession.fromJson(_json(
+      state: 'accepted',
+      offer: 'v=0\r\noffer-fake',
+      answer: 'v=0\r\nanswer-fake',
+    ));
     media.emitFailed();
     await Future<void>.delayed(const Duration(milliseconds: 30));
     expect(media.disposeCount, 1);
@@ -135,7 +139,12 @@ void _markAuthenticated(CallController controller) {
   controller.session = CallSession.fromJson(_json(state: 'connected'));
 }
 
-Map<String, dynamic> _json({required String state}) => {
+Map<String, dynamic> _json({
+  required String state,
+  String? offer,
+  String? answer,
+}) =>
+    {
       'id': 'call-1',
       'caller_user_id': 'alice',
       'callee_user_id': 'bob',
@@ -148,4 +157,6 @@ Map<String, dynamic> _json({required String state}) => {
       'created_at': DateTime.now().toUtc().toIso8601String(),
       'updated_at': DateTime.now().toUtc().toIso8601String(),
       'version': 1,
+      'sdp_offer': ?offer,
+      'sdp_answer': ?answer,
     };

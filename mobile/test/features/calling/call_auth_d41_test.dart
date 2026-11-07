@@ -238,6 +238,21 @@ void main() {
     expect(outcome.manuallyVerified, isFalse);
   });
 
+  test('confirm client_auth_id stays within the server 80-byte cap', () {
+    // Regression: "confirm-<device>-<call>" is 81 chars and was rejected as
+    // handshake ErrInvalid (HTTP 400) after ICE Connected + binding succeeded.
+    final legacy = 'confirm-$_aliceDev-$_call';
+    expect(legacy.length, greaterThan(80));
+    final hello = authClientId(kind: 'hello', deviceId: _aliceDev, callId: _call);
+    final confirm = authClientId(kind: 'cfm', deviceId: _aliceDev, callId: _call);
+    expect(hello.length, lessThanOrEqualTo(80));
+    expect(confirm.length, lessThanOrEqualTo(80));
+    expect(
+      () => authClientId(kind: 'confirm', deviceId: _aliceDev, callId: _call),
+      throwsFormatException,
+    );
+  });
+
   test('session fails closed when the enrolled device is revoked', () async {
     final outcome = await _runSession(helloCallId: _call, enrolled: false);
     expect(outcome.error, 'Identity revoked');
@@ -330,6 +345,18 @@ void main() {
     expect(controller.remoteMediaAuthenticated, isFalse);
   });
 
+  test('session accepts relay hellos that omit role (production mapAuthFrame)', () async {
+    // Backend mapAuthFrame does not echo role/call_id. Deriving role from the
+    // call session must still authenticate.
+    final outcome = await _runSession(
+      helloCallId: _call,
+      enrolled: true,
+      complete: true,
+      omitRoleInFrame: true,
+    );
+    expect(outcome.phase, CallAuthPhase.authenticated);
+  });
+
   test('replacing the peer connection invalidates authentication', () async {
     final media = FakeCallService();
     var hungUp = false;
@@ -342,7 +369,15 @@ void main() {
         return http.Response(jsonEncode(_sessionJson(state: 'connected')), 200);
       }
       if (request.url.path == '/calls/active') {
-        return http.Response(jsonEncode({'call': _sessionJson()}), 200);
+        return http.Response(
+          jsonEncode({
+            'call': _sessionJson(
+              offer: 'v=0\r\noffer-fake',
+              answer: 'v=0\r\nanswer-fake',
+            ),
+          }),
+          200,
+        );
       }
       return http.Response(jsonEncode({'candidates': []}), 200);
     });
@@ -354,9 +389,12 @@ void main() {
       authenticatePeer: (_) async =>
           const CallAuthOutcome(phase: CallAuthPhase.authenticated),
     );
-    controller.phase = CallPhase.connecting;
-    controller.session = CallSession.fromJson(_sessionJson());
     await controller.startListening();
+    controller.phase = CallPhase.connecting;
+    controller.session = CallSession.fromJson(_sessionJson(
+      offer: 'v=0\r\noffer-fake',
+      answer: 'v=0\r\nanswer-fake',
+    ));
     media.emitConnected();
     await Future<void>.delayed(const Duration(milliseconds: 30));
     media.replacePeerConnection();
@@ -371,6 +409,7 @@ Future<CallAuthOutcome> _runSession({
   required bool enrolled,
   bool complete = false,
   bool omitEnrollment = false,
+  bool omitRoleInFrame = false,
 }) async {
   final algo = Ed25519();
   final peer = await algo.newKeyPair();
@@ -406,6 +445,11 @@ Future<CallAuthOutcome> _runSession({
         }
         if (request.method == 'POST' && request.url.path.endsWith('/auth')) {
           final body = jsonDecode(request.body) as Map<String, dynamic>;
+          final clientAuthId = body['client_auth_id'] as String? ?? '';
+          // Mirror server Submit: client_auth_id longer than 80 → ErrInvalid/400.
+          if (clientAuthId.isEmpty || clientAuthId.length > 80) {
+            return http.Response('handshake rejected', 400);
+          }
           if (body['kind'] == 'hello') {
             localNonce = base64Decode(body['nonce_b64'] as String);
             localKey = base64Decode(body['call_public_key_b64'] as String);
@@ -416,10 +460,10 @@ Future<CallAuthOutcome> _runSession({
         final frames = <Map<String, dynamic>>[
           {
             'kind': 'hello',
-            'call_id': helloCallId,
+            if (!omitRoleInFrame) 'call_id': helloCallId,
             'sender_user_id': _bob,
             'sender_device_id': _bobDev,
-            'role': 2,
+            if (!omitRoleInFrame) 'role': 2,
             'nonce_b64': base64Encode(peerNonce),
             'call_public_key_b64': base64Encode(peerPub),
             'mls_fingerprint_hex': _hex(mls),
@@ -477,7 +521,12 @@ Future<CallAuthOutcome> _runSession({
   ));
 }
 
-Map<String, dynamic> _sessionJson({String state = 'accepted'}) => {
+Map<String, dynamic> _sessionJson({
+  String state = 'accepted',
+  String? offer,
+  String? answer,
+}) =>
+    {
       'id': _call,
       'caller_user_id': _alice,
       'callee_user_id': _bob,
@@ -490,6 +539,8 @@ Map<String, dynamic> _sessionJson({String state = 'accepted'}) => {
       'created_at': DateTime.now().toUtc().toIso8601String(),
       'updated_at': DateTime.now().toUtc().toIso8601String(),
       'version': 1,
+      'sdp_offer': ?offer,
+      'sdp_answer': ?answer,
     };
 
 String _hex(List<int> bytes) => bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();

@@ -256,10 +256,35 @@ void main() {
   test('ICE negotiation failure hangs up and disposes media', () async {
     var hungUp = false;
     final media = FakeCallService();
+    final hints = StreamController<Map<String, dynamic>>.broadcast();
+    addTearDown(hints.close);
     final client = MockClient((request) async {
-      if (request.url.path == '/calls/active') {
+      if (request.method == 'POST' && request.url.path == '/calls') {
+        return http.Response(jsonEncode(_sessionJson()), 201);
+      }
+      if (request.method == 'PUT' && request.url.path.endsWith('/offer')) {
         return http.Response(
-          jsonEncode({'call': _sessionJson(state: 'accepted')}),
+          jsonEncode(_sessionJson(offer: 'v=0\r\noffer-fake')),
+          200,
+        );
+      }
+      if (request.url.path == '/calls/active' ||
+          request.url.path.endsWith('/calls/call-1')) {
+        return http.Response(
+          jsonEncode({
+            if (request.url.path == '/calls/active')
+              'call': _sessionJson(
+                state: 'accepted',
+                offer: 'v=0\r\noffer-fake',
+                answer: 'v=0\r\nanswer-fake',
+              )
+            else
+              ..._sessionJson(
+                state: 'accepted',
+                offer: 'v=0\r\noffer-fake',
+                answer: 'v=0\r\nanswer-fake',
+              ),
+          }),
           200,
         );
       }
@@ -272,11 +297,20 @@ void main() {
       }
       return http.Response('nope', 404);
     });
-    final controller = _controller(media: media, client: client, myUserId: 'alice');
+    final controller = _controller(
+      media: media,
+      client: client,
+      myUserId: 'alice',
+      hints: hints.stream,
+    );
     addTearDown(controller.dispose);
-    controller.phase = CallPhase.connecting;
-    controller.session = CallSession.fromJson(_sessionJson(state: 'accepted'));
+    await controller.startOutgoing(
+      peerUserId: 'bob',
+      mediaType: CallMediaType.audio,
+    );
     await controller.startListening();
+    hints.add({'type': 'call.answer', 'call_id': 'call-1'});
+    await Future<void>.delayed(const Duration(milliseconds: 40));
     media.emitFailed();
     await Future<void>.delayed(const Duration(milliseconds: 40));
     expect(hungUp, isTrue);
@@ -370,7 +404,6 @@ void main() {
     final media = FakeCallService();
     final client = MockClient((request) async {
       fail('no network call when permissions are denied');
-      return http.Response('nope', 404);
     });
     final controller = _controller(
       media: media,

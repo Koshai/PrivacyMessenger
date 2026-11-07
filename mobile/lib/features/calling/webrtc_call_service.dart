@@ -30,6 +30,8 @@ class WebRtcCallService implements CallService {
   bool _renderersReady = false;
   int _iceSeq = 0;
   bool _videoActive = false;
+  final List<RTCIceCandidate> _pendingRemoteIce = [];
+  bool _remoteDescriptionReady = false;
 
   @override
   Stream<CallMediaEvent> get events => _events.stream;
@@ -158,15 +160,23 @@ class WebRtcCallService implements CallService {
   Future<String> createOffer() async {
     final offer = await _pc!.createOffer({
       'offerToReceiveAudio': 1,
-      'offerToReceiveVideo': 1,
+      // Audio-only calls must not advertise a video transceiver the peer cannot
+      // answer cleanly under a mic-only getUserMedia prepare.
+      'offerToReceiveVideo': _videoActive ? 1 : 0,
     });
+    // Local description must be the unmodified createOffer SDP. Sanitizing
+    // before setLocalDescription left the PC in stable so answers failed with
+    // "Called in wrong state: stable". Peer-side applyRemote* sanitizes.
     await _pc!.setLocalDescription(offer);
     return offer.sdp ?? '';
   }
 
   @override
   Future<void> applyRemoteOffer(String sdp) async {
-    await _pc!.setRemoteDescription(RTCSessionDescription(sdp, 'offer'));
+    final cleaned = sanitizeCallSdp(sdp);
+    await _pc!.setRemoteDescription(RTCSessionDescription(cleaned, 'offer'));
+    _remoteDescriptionReady = true;
+    await _flushPendingRemoteIce();
     await _noteRemoteFingerprint();
   }
 
@@ -179,7 +189,10 @@ class WebRtcCallService implements CallService {
 
   @override
   Future<void> applyRemoteAnswer(String sdp) async {
-    await _pc!.setRemoteDescription(RTCSessionDescription(sdp, 'answer'));
+    final cleaned = sanitizeCallSdp(sdp);
+    await _pc!.setRemoteDescription(RTCSessionDescription(cleaned, 'answer'));
+    _remoteDescriptionReady = true;
+    await _flushPendingRemoteIce();
     await _noteRemoteFingerprint();
   }
 
@@ -189,7 +202,24 @@ class WebRtcCallService implements CallService {
     String? sdpMid,
     int? sdpMLineIndex,
   }) async {
-    await _pc!.addCandidate(RTCIceCandidate(candidate, sdpMid, sdpMLineIndex));
+    final pc = _pc;
+    if (pc == null) return;
+    final ice = RTCIceCandidate(candidate, sdpMid, sdpMLineIndex);
+    if (!_remoteDescriptionReady) {
+      _pendingRemoteIce.add(ice);
+      return;
+    }
+    await pc.addCandidate(ice);
+  }
+
+  Future<void> _flushPendingRemoteIce() async {
+    final pc = _pc;
+    if (pc == null) return;
+    final pending = List<RTCIceCandidate>.from(_pendingRemoteIce);
+    _pendingRemoteIce.clear();
+    for (final ice in pending) {
+      await pc.addCandidate(ice);
+    }
   }
 
   @override
@@ -259,6 +289,8 @@ class WebRtcCallService implements CallService {
     _remotePlayback = false;
     _videoActive = false;
     _iceSeq = 0;
+    _pendingRemoteIce.clear();
+    _remoteDescriptionReady = false;
     // flutter_webrtc rejects srcObject until initialize(); prepare calls
     // disposeMedia before the first _ensureRenderers, so guard the clear.
     if (_renderersReady) {
@@ -271,4 +303,29 @@ class WebRtcCallService implements CallService {
       _renderersReady = false;
     }
   }
+}
+
+/// Normalizes SDP so Unified Plan setRemoteDescription accepts offers from
+/// peers that still emit Plan-B SSRC attribute lines.
+///
+/// Device evidence (Samsung arm64): `a=ssrc:<id> msid:<stream> <track>` is
+/// rejected as "Invalid SDP line", aborting Accept before an answer is posted.
+/// Media-level `a=msid:` already carries the association under Unified Plan.
+String sanitizeCallSdp(String sdp) {
+  if (sdp.isEmpty) return sdp;
+  final normalized = sdp.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+  final planBSsrc = RegExp(
+    r'^a=ssrc:\d+\s+(msid|mslabel|label):',
+    caseSensitive: false,
+  );
+  final kept = <String>[];
+  for (final raw in normalized.split('\n')) {
+    final line = raw.trimRight();
+    if (planBSsrc.hasMatch(line)) continue;
+    kept.add(line);
+  }
+  while (kept.isNotEmpty && kept.last.isEmpty) {
+    kept.removeLast();
+  }
+  return '${kept.join('\r\n')}\r\n';
 }

@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../messaging/delivery_timing.dart';
 import 'call_auth.dart';
 import 'calling_api_client.dart';
 
@@ -136,7 +137,8 @@ class CallAuthSession {
       callId: request.session.id,
       body: {
         'kind': 'hello',
-        'client_auth_id': 'hello-$deviceId-${request.session.id}',
+        // Server caps client_auth_id at 80 bytes; "confirm-" + 2 UUIDs is 81.
+        'client_auth_id': authClientId(kind: 'hello', deviceId: deviceId, callId: request.session.id),
         'nonce_b64': base64Encode(nonce),
         'call_public_key_b64': base64Encode(public),
         'mls_fingerprint_hex': localMlsFingerprintHex,
@@ -170,7 +172,8 @@ class CallAuthSession {
     final peerRole = request.iAmCaller ? 2 : 1;
 
     Map<String, dynamic>? peerHello;
-    for (var i = 0; i < 20; i++) {
+    // Keep hello polling short relative to MLS binding wait (see MlsCallKeyChannel).
+    for (var i = 0; i < 40; i++) {
       final frames = await api.listAuth(token: token(), callId: request.session.id);
       peerHello = frames.cast<Map<String, dynamic>?>().firstWhere(
         (f) => f?['kind'] == 'hello' && f?['sender_device_id'] == peerDeviceExpected,
@@ -189,11 +192,14 @@ class CallAuthSession {
     final peerNonce = base64Decode(peerHello['nonce_b64'] as String);
     final peerDevice = peerHello['sender_device_id'] as String;
     final pinned = await _readPin(peerDevice);
+    // Relay frames do not include role/call_id (mapAuthFrame). Role is derived
+    // from the call session: treating a missing role as 0 made every hello
+    // "malformed" and ended ICE-connected calls ~3s after Accept.
     final helloCheck = await verifyPeerHello(
       callId: peerHello['call_id'] as String? ?? request.session.id,
       userId: peerHello['sender_user_id'] as String? ?? '',
       deviceId: peerDevice,
-      role: (peerHello['role'] as num?)?.toInt() ?? 0,
+      role: peerRole,
       nonce: peerNonce,
       callKey: peerKey,
       mls: peerMls,
@@ -257,6 +263,7 @@ class CallAuthSession {
         error: 'Enrollment check unavailable',
       );
     }
+    DeliveryTiming.record('call_auth_enrollment_check', 0);
     if (!await enrolled(peerUser, peerDeviceExpected)) {
       return const CallAuthOutcome(phase: CallAuthPhase.failed, error: 'Identity revoked');
     }
@@ -286,12 +293,13 @@ class CallAuthSession {
       calleeCallKey: calleeKey,
     );
     final confirmSig = await Ed25519().sign(transcript.bytes(), keyPair: pair);
+    DeliveryTiming.record('call_auth_confirm_submit', 0);
     await api.submitAuth(
       token: token(),
       callId: request.session.id,
       body: {
         'kind': 'confirm',
-        'client_auth_id': 'confirm-$deviceId-${request.session.id}',
+        'client_auth_id': authClientId(kind: 'cfm', deviceId: deviceId, callId: request.session.id),
         'nonce_b64': base64Encode(nonce),
         'call_public_key_b64': base64Encode(public),
         'mls_fingerprint_hex': localMlsFingerprintHex,
@@ -300,6 +308,7 @@ class CallAuthSession {
         'signature_b64': base64Encode(confirmSig.bytes),
       },
     );
+    DeliveryTiming.record('call_auth_confirm_accepted', 0);
 
     Map<String, dynamic>? peerConfirm;
     for (var i = 0; i < 20; i++) {
@@ -384,6 +393,23 @@ class CallAuthSession {
   }
 
   String _hex(List<int> bytes) => bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+}
+
+/// Idempotency key for call-auth frames. The server rejects ids longer than 80.
+///
+/// `confirm-<deviceUUID>-<callUUID>` is 81 characters and was rejected as
+/// ErrInvalid (HTTP 400) after hello/binding succeeded — ending ICE-connected
+/// calls during confirm submit.
+String authClientId({
+  required String kind,
+  required String deviceId,
+  required String callId,
+}) {
+  final id = '$kind-$deviceId-$callId';
+  if (id.length > 80) {
+    throw FormatException('client_auth_id exceeds 80 bytes ($kind)');
+  }
+  return id;
 }
 
 Future<void> persistManualCallTrust(String peerDeviceId) {

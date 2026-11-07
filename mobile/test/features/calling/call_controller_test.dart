@@ -272,9 +272,37 @@ void main() {
   test('connection failed hangs up and cleans media', () async {
     final media = FakeCallService();
     var hungUp = false;
+    final hints = StreamController<Map<String, dynamic>>.broadcast();
+    addTearDown(hints.close);
     final client = MockClient((request) async {
-      if (request.url.path == '/calls/active') {
-        return http.Response(jsonEncode({'call': _sessionJson(state: 'accepted')}), 200);
+      if (request.method == 'POST' && request.url.path == '/calls') {
+        return http.Response(jsonEncode(_sessionJson()), 201);
+      }
+      if (request.method == 'PUT' && request.url.path.endsWith('/offer')) {
+        return http.Response(
+          jsonEncode(_sessionJson(offer: 'v=0\r\noffer-fake')),
+          200,
+        );
+      }
+      if (request.url.path == '/calls/active' ||
+          request.url.path.endsWith('/calls/call-1')) {
+        return http.Response(
+          jsonEncode({
+            if (request.url.path == '/calls/active')
+              'call': _sessionJson(
+                state: 'accepted',
+                offer: 'v=0\r\noffer-fake',
+                answer: 'v=0\r\nanswer-fake',
+              )
+            else
+              ..._sessionJson(
+                state: 'accepted',
+                offer: 'v=0\r\noffer-fake',
+                answer: 'v=0\r\nanswer-fake',
+              ),
+          }),
+          200,
+        );
       }
       if (request.url.path.endsWith('/hangup')) {
         hungUp = true;
@@ -282,10 +310,14 @@ void main() {
       }
       return http.Response(jsonEncode({'candidates': []}), 200);
     });
-    final controller = _controller(media: media, client: client);
-    controller.phase = CallPhase.connecting;
-    controller.session = CallSession.fromJson(_sessionJson(state: 'accepted'));
+    final controller = _controller(media: media, client: client, hints: hints.stream);
+    await controller.startOutgoing(
+      peerUserId: 'bob',
+      mediaType: CallMediaType.audio,
+    );
     await controller.startListening();
+    hints.add({'type': 'call.answer', 'call_id': 'call-1'});
+    await Future<void>.delayed(const Duration(milliseconds: 40));
     media.emitFailed();
     await Future<void>.delayed(const Duration(milliseconds: 40));
     expect(hungUp, isTrue);
@@ -462,16 +494,28 @@ void main() {
   test('short disconnect recovers; long disconnect ends the call', () async {
     final media = FakeCallService();
     var hangups = 0;
+    final negotiated = _sessionJson(
+      state: 'accepted',
+      offer: 'v=0\r\noffer-fake',
+      answer: 'v=0\r\nanswer-fake',
+    );
     final client = MockClient((request) async {
       if (request.url.path == '/calls/active') {
-        return http.Response(jsonEncode({'call': _sessionJson(state: 'accepted')}), 200);
+        return http.Response(jsonEncode({'call': negotiated}), 200);
       }
       if (request.url.path.endsWith('/hangup')) {
         hangups++;
         return http.Response(jsonEncode(_sessionJson(state: 'ended')), 200);
       }
       if (request.url.path.endsWith('/connected')) {
-        return http.Response(jsonEncode(_sessionJson(state: 'connected')), 200);
+        return http.Response(
+          jsonEncode(_sessionJson(
+            state: 'connected',
+            offer: 'v=0\r\noffer-fake',
+            answer: 'v=0\r\nanswer-fake',
+          )),
+          200,
+        );
       }
       return http.Response(jsonEncode({'candidates': []}), 200);
     });
@@ -485,9 +529,9 @@ void main() {
       authenticatePeer: (_) async =>
           const CallAuthOutcome(phase: CallAuthPhase.authenticated),
     );
-    controller.phase = CallPhase.connecting;
-    controller.session = CallSession.fromJson(_sessionJson(state: 'accepted'));
     await controller.startListening();
+    controller.phase = CallPhase.connecting;
+    controller.session = CallSession.fromJson(negotiated);
     media.emit(const CallMediaEvent(kind: CallMediaEventKind.connectionDisconnected));
     media.emitConnected();
     await Future<void>.delayed(const Duration(milliseconds: 120));
