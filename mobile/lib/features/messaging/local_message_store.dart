@@ -6,6 +6,8 @@ import 'package:cryptography/cryptography.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../../core/crypto/secure_storage_factory.dart';
+
 /// AES-GCM message history for one account on one device.
 ///
 /// The database is a normal SQLite file. Plaintext is encrypted before it is
@@ -58,8 +60,7 @@ class LocalMessageStore implements InboundMessageHistory {
       throw ArgumentError.value(dbPath, 'dbPath', 'database path is empty');
     }
 
-    final secure =
-        storage ?? const FlutterSecureStorage(aOptions: AndroidOptions());
+    final secure = storage ?? createAppSecureStorage();
     final storageKey = storageKeyFor(userId, deviceId);
     final key = await _loadOrCreateKey(
       storage: secure,

@@ -6,6 +6,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'openmls/openmls_encryption_service.dart';
 import 'protocol_messages.dart';
+import 'secure_storage_factory.dart';
 
 /// Policies for identity lifecycle (C3/C4).
 ///
@@ -96,10 +97,7 @@ class DeviceCryptoStore {
   final FlutterSecureStorage _storage;
 
   DeviceCryptoStore({FlutterSecureStorage? storage})
-      : _storage = storage ??
-            const FlutterSecureStorage(
-              aOptions: AndroidOptions(),
-            );
+      : _storage = storage ?? createAppSecureStorage();
 
   String _keyFor(String userId, String deviceId) =>
       '${_storageKeyPrefix}_${userId}_$deviceId';

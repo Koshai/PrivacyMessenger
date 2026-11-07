@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../../features/auth/models/auth_session.dart';
+import '../crypto/secure_storage_factory.dart';
 import 'session_store.dart';
 
 class SecureSessionStore implements SessionStore {
@@ -11,12 +12,7 @@ class SecureSessionStore implements SessionStore {
   final FlutterSecureStorage _storage;
 
   SecureSessionStore({FlutterSecureStorage? storage})
-    : _storage =
-          storage ??
-          const FlutterSecureStorage(
-            // v11 defaults to Keystore-backed AES-GCM (no EncryptedSharedPreferences API).
-            aOptions: AndroidOptions(),
-          );
+    : _storage = storage ?? createAppSecureStorage();
 
   @override
   Future<void> save(AuthSession session) async {

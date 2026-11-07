@@ -11,13 +11,21 @@ The Flutter app has one configuration type, `ApiConfig`. Hosted builds set it wi
 | `validation` | required `https://...` | That URL. Missing URL or `http://` fails at startup |
 | `production` | required `https://...` | That URL. Same rejection rules as validation |
 
-Validation build:
+Validation build (Android):
 
 ```sh
-flutter build apk --dart-define=APP_ENV=validation --dart-define=API_BASE_URL=https://api.example.com
+flutter build apk --dart-define=APP_ENV=validation --dart-define=API_BASE_URL=https://privacymessenger-test.duckdns.org
 ```
 
-Use the owned API hostname after DNS approval. `api.example.com` is a placeholder.
+Validation compile (iOS, unsigned — not installable on tester devices):
+
+```sh
+flutter build ios --release --no-codesign \
+  --dart-define=APP_ENV=validation \
+  --dart-define=API_BASE_URL=https://privacymessenger-test.duckdns.org
+```
+
+Current validation hostname: `https://privacymessenger-test.duckdns.org`.
 
 WebSocket URLs replace `https` with `wss` and use path `/realtime/ws`. A validation build cannot fall through to `10.0.2.2` or `127.0.0.1`.
 

@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../../core/crypto/secure_storage_factory.dart';
 import '../messaging/delivery_timing.dart';
 import 'call_auth.dart';
 import 'calling_api_client.dart';
@@ -56,7 +57,7 @@ Future<void> writePinIfUnchanged(CallAuthStore store, String key, String value) 
 
 class SecureCallAuthStore implements CallAuthStore {
   SecureCallAuthStore([FlutterSecureStorage? storage])
-      : _storage = storage ?? const FlutterSecureStorage(aOptions: AndroidOptions());
+      : _storage = storage ?? createAppSecureStorage();
 
   final FlutterSecureStorage _storage;
 
@@ -460,7 +461,7 @@ String authClientId({
 }
 
 Future<void> persistManualCallTrust(String peerDeviceId) {
-  const storage = FlutterSecureStorage(aOptions: AndroidOptions());
+  final storage = createAppSecureStorage();
   return storage.write(key: 'call_auth_manual_$peerDeviceId', value: '1');
 }
 

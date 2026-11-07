@@ -1,0 +1,134 @@
+name: iOS Validation
+
+# Unsigned / no-codesign compile validation on hosted macOS.
+# Success here does NOT mean the app can be installed on a physical iPhone
+# or distributed via TestFlight.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "mobile/ios/**"
+      - "mobile/lib/**"
+      - "mobile/pubspec.yaml"
+      - "mobile/pubspec.lock"
+      - "mobile/test/**"
+      - ".github/workflows/ios-validation.yml"
+
+concurrency:
+  group: ios-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios-validation:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show runner toolchain
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcodebuild -version
+          rustc --version || true
+          echo "Note: openmls 3.3.0 downloads prebuilt iOS libraries; rustc is diagnostic only."
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47.8"
+          channel: stable
+          cache: true
+
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      - name: Resolve packages
+        run: |
+          set -euo pipefail
+          flutter pub get
+          if [[ -f ios/Podfile ]]; then
+            echo "::error::CocoaPods Podfile present; this project uses Swift Package Manager. Update the workflow before adding pods."
+            exit 1
+          fi
+
+      - name: Static analysis
+        run: flutter analyze
+
+      - name: Unit and widget tests
+        run: flutter test
+
+      - name: OpenMLS-focused tests
+        run: |
+          flutter test \
+            test/core/crypto/openmls_poc_test.dart \
+            test/core/crypto/device_crypto_lifecycle_test.dart
+
+      - name: Compile iOS release (no codesign)
+        id: ios_release
+        env:
+          # Validation endpoint used by dart-defines; no secrets.
+          APP_ENV_DEFINE: validation
+          API_BASE_URL_DEFINE: https://privacymessenger-test.duckdns.org
+        run: |
+          set -euo pipefail
+          mkdir -p build/ios-validation-logs
+          set +e
+          flutter build ios --release --no-codesign \
+            --dart-define=APP_ENV=${APP_ENV_DEFINE} \
+            --dart-define=API_BASE_URL=${API_BASE_URL_DEFINE} \
+            2>&1 | tee build/ios-validation-logs/flutter-build-ios-release.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [[ $status -ne 0 ]]; then
+            echo "::error::flutter build ios --release --no-codesign failed (exit $status). Check linker/native library errors in the log artifact."
+            exit "$status"
+          fi
+
+      - name: Compile iOS simulator debug (no codesign)
+        id: ios_sim
+        run: |
+          set -euo pipefail
+          mkdir -p build/ios-validation-logs
+          set +e
+          flutter build ios --simulator --debug --no-codesign \
+            2>&1 | tee build/ios-validation-logs/flutter-build-ios-simulator.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [[ $status -ne 0 ]]; then
+            echo "::error::flutter build ios --simulator failed (exit $status)."
+            exit "$status"
+          fi
+
+      - name: Collect non-sensitive diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p build/ios-validation-logs
+          {
+            echo "=== flutter --version ==="
+            flutter --version
+            echo
+            echo "=== flutter pub deps (compact) ==="
+            flutter pub deps --style=compact || true
+            echo
+            echo "=== openmls asset cache (names only) ==="
+            find "$HOME/.dart_tool" "$HOME/.pub-cache" -iname '*openmls*' -type f 2>/dev/null \
+              | head -n 80 || true
+            echo
+            echo "=== ios tree (non-ephemeral) ==="
+            find ios -maxdepth 3 \( -name Podfile -o -name '*.xcconfig' -o -name Info.plist \) -print || true
+          } > build/ios-validation-logs/diagnostics.txt
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-validation-diagnostics-${{ github.run_id }}
+          path: mobile/build/ios-validation-logs/
+          if-no-files-found: warn
+          retention-days: 14
