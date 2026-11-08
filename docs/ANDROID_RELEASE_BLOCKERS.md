@@ -1,71 +1,63 @@
 # Android Release Blockers
 
-Living register updated through **Step 19.7.30B**. Severity: **Blocker** > **High** > **Medium** > **Low**.
+Living register updated through **Step 19.7.30C**. Severity: **Blocker** > **High** > **Medium** > **Low**.
 
 ## Open — security / data-loss
 
-| ID | Severity | Reproduction | Impact | Devices | Data-loss / security | Proposed correction | Status | Acceptance test |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| RB-30A-001 | **High** | Logout on a device with readable encrypted history | Prior chats unreadable after re-login (new MLS identity) | All | Intentional key wipe | Keep confirmation; RC notes; never experiment on established accounts | Open (by design) | Disposable logout → history not decryptable |
-| RB-30A-003 | **Medium** | Peer index `.peers.json` survives logout | Stale opaque ids under old user/device path | All | Low if device ids rotate | Optional logout sidecar cleanup (approved change later) | Open | Disposable logout isolation |
+| ID | Severity | Reproduction | Impact | Status | Acceptance test |
+| --- | --- | --- | --- | --- | --- |
+| RB-30A-001 | **High** | Logout wipes MLS keys; history unreadible after re-login | By-design data loss risk | Open (by design) | Disposable logout only |
+| RB-30A-003 | **Medium** | Peer index sidecar survives logout | Stale opaque ids | Open | Disposable isolation |
 
 ## Open — messaging reliability
 
-| ID | Severity | Reproduction | Impact | Status | Acceptance test |
-| --- | --- | --- | --- | --- | --- |
-| RB-30B-001 | **High** | Second validation handset unavailable | Bidirectional live send/receive after UX+30A update **unverified** | Open | Two-device messaging smoke on updated APKs |
-| RB-30B-002 | **Medium** | Cross-store crash between MLS ratchet advance and history/outbox commit | Non-atomic window; mitigated by barriers but not fully eliminated | Open (architectural) | Documented in reliability matrix; disposable crash fixtures only |
-| RB-30A-004 | **Medium** | Chat list shows “Encrypted chat” until conversation opened once | Weaker previews | Open | After open + restart, preview/time persist |
+| ID | Severity | Notes | Status |
+| --- | --- | --- | --- |
+| RB-30B-001 | **High** | Two-device messaging after update **unverified** (Device B missing) | Open |
+| RB-30B-002 | **Medium** | Cross-store MLS↔history crash window (architectural) | Open |
+| RB-30A-004 | **Medium** | Chat preview “Encrypted chat” until first open | Open |
 
-## Open — calling / device verification
+## Open — calling / physical acceptance
 
 | ID | Severity | Notes | Status |
 | --- | --- | --- | --- |
-| RB-30A-002 | **High** | Two-device calling UX regression after Batches B–E still pending | Open → 19.7.30C |
+| RB-30A-002 | **High** | Updated two-device A/V calling acceptance after UX batches | **Open** — Device B not attached; see `ANDROID_CALLING_ACCEPTANCE_30C.md` |
+| RB-30C-001 | **High** | Bidirectional audio on updated APKs not physically verified | Open |
+| RB-30C-002 | **High** | Bidirectional video + local PiP + cam switch not physically verified | Open |
+| RB-30C-003 | **Medium** | Physical Android Back during live ringing/active call not revalidated on device | Open (widget coverage exists) |
+| RB-30C-004 | **Medium** | TURN relay selected-pair not proven; do not claim relay-only success | Open |
+| RB-30C-005 | **Low** | Active call network migration (Wi-Fi↔cellular) unsupported / unproven — must end cleanly | Open |
 
 ## Not blockers
 
-| ID | Severity | Notes | Status |
-| --- | --- | --- | --- |
-| RB-30A-010 | Low | Validation APK uses debug signing | Documented |
-| RB-30A-011 | Low | `versionCode` still `1` | Bump before store/RC |
-| RB-30A-012 | Low | Dark theme deferred | Out of scope |
-| RB-30A-013 | Low | No global connectivity banner | Conversation-scoped only |
-| RB-30A-014 | Low | No terminated-app incoming call / FCM | Must not claim |
+| ID | Severity | Notes |
+| --- | --- | --- |
+| RB-30A-010 | Low | Debug signing for validation APKs |
+| RB-30A-011 | Low | versionCode still 1 |
+| RB-30A-012–014 | Low | Dark theme / global banner / killed-app incoming |
 
-## Closed / verified
+## Closed / verified (code or one-device)
 
 | ID | Milestone | Notes |
 | --- | --- | --- |
-| RB-30A-V01 | 30A | Signing-compatible `adb install -r` on SM-S938U |
-| RB-30A-V02 | 30A | Session survived update; tabs reachable |
-| RB-30A-V03 | 30A | History open fail-closed without key replacement |
-| RB-30A-V04 | 30A | Peer index isolation / corrupt handling tests |
-| RB-30B-V01 | 30B | Existing conversation opens post-update; substantial a11y content nodes; not unavailable/empty |
-| RB-30B-V02 | 30B | Background → reopen conversation still shows substantial content nodes |
-| RB-30B-V03 | 30B | Outbox UI action matrix locked in solidification tests; existing outbox/idempotency suites green |
+| RB-30A-V01–V04 | 30A | Update-in-place, session, fail-closed history, peer index tests |
+| RB-30B-V01–V03 | 30B | History open/reopen; outbox UI matrix |
+| RB-30C-V01 | 30C | Call entry affordances on SM-S938U (Audio/Video); no stuck overlay |
+| RB-30C-V02 | 30C | Automated auth gate, duplicate hangUp cleanup, jargon-free copy, camera-off preview tests |
 
-## Manual acceptance checklist
+## Manual checklist snapshot
 
-### Device A — SM-S938U (`R5CXC2SA8HJ`)
+### Device A — SM-S938U
 
-- [x] Signature-compatible update installed (30A)
-- [x] App launches; session authenticated
-- [x] Chats / Friends / Settings reachable
-- [x] Open existing conversation (history content present via a11y; no unavailable/empty)
-- [x] Background and reopen conversation (content nodes remain)
-- [ ] Live send with honest status (deferred — avoid noise without peer device)
-- [ ] Safety number from a call
-- [ ] Large text Hang up / Send
-- [ ] Audio / video call smoke + Back policy
+- [x] Updated APK; session; chats/friends/settings
+- [x] Conversation history open (30B)
+- [x] Audio/Video call buttons visible; no stuck Hang up overlay (30C one-device)
+- [ ] Live A/V with peer
+- [ ] Back during live call
+- [ ] Permission recovery on device/emulator
 
-### Device B — second validation handset
+### Device B
 
-- [ ] Attached via ADB
-- [ ] Update + session/history preserved
-- [ ] Bidirectional messaging
-- [ ] Calling smoke (30C)
+- [ ] Not attached — all two-device rows **Pending**
 
-## Owner
-
-Do not close physical-device blockers with unit tests alone. Do not clear established device data to “fix” failures.
+Physical acceptance of 30C is **not** complete until C30-A01/A02/V01/V02 pass.
