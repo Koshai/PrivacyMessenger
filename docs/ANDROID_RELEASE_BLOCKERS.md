@@ -23,7 +23,6 @@ Living register updated through **Step 19.7.30E**. Severity: **Blocker** > **Hig
 
 | ID | Severity | Class | Notes | Status | Close evidence |
 | --- | --- | --- | --- | --- | --- |
-| RB-30B-001 | **High** | **Must fix before controlled external beta** | Two-device messaging after UX/update unverified | Open (30E: Device B absent) | M-01–M-07 on A+B |
 | RB-30A-004 | **Medium** | Deferred improvement | Preview “Encrypted chat” until first open | Open | Preview decrypt policy |
 
 ## Open — calling / physical acceptance
@@ -31,7 +30,7 @@ Living register updated through **Step 19.7.30E**. Severity: **Blocker** > **Hig
 | ID | Severity | Class | Notes | Status | Close evidence |
 | --- | --- | --- | --- | --- | --- |
 | RB-30A-002 | **High** | **Must fix before controlled external beta** | Updated two-device A/V after UX batches | Open | Calling matrix with media evidence |
-| RB-30C-001 | **High** | **Must fix before controlled external beta** | Bidirectional **audible** audio not verified on current APKs | Open | A-01/A-02 (+ consecutive) |
+| RB-30C-001 | **High** | **Must fix before controlled external beta** | A→B signaling/accept/hangup cleanup observed; **audible** two-way audio + B→A + consecutive still unverified | Open | Prove audible media both directions |
 | RB-30C-002 | **High** | **Must fix before controlled external beta** | Bidirectional **visible** video + controls not verified | Open | V-01/V-02 |
 | RB-30C-003 | **Medium** | Must fix before controlled external beta (preferred) | Physical Back during live call | Open | C30-B\* / V-04 |
 | RB-30C-004 | **Medium** | Must fix before public release (for relay claims) | TURN selected-pair unproven | Open | Privacy-safe candidate type when selected |
@@ -41,7 +40,7 @@ Living register updated through **Step 19.7.30E**. Severity: **Blocker** > **Hig
 
 | ID | Severity | Class | Notes | Status | Close evidence |
 | --- | --- | --- | --- | --- | --- |
-| RB-30D-001 | **High** | **Must fix before controlled external beta** | Emulator B attached + upgraded; **accounts not friended** → two-device messaging/calls still unmet | **Open (narrowed)** | Complete friend request A↔B; then M-01 / A-01 / V-01 |
+| RB-30D-001 | **High** | Narrowed to A/V media | Emulator B online; messaging gate met with named accounts; A/V media still open | **Partially closed** | Close remaining via RB-30C-* |
 | RB-30D-002 | **Medium** | Narrowed — remaining live-call/safety a11y | Device A TalkBack+1.5× font smoke **passed** on retest; safety-number + live call controls still need Device B | **Partially closed (A)**; residual open | X-06/X-07 with peer call |
 | RB-30D-003 | **Low** | Deferred improvement | No custom crash handler / local diagnostic export | Open | Approved privacy-preserving design |
 | RB-30D-004 | **Low** | Must fix before public release | versionCode `1`; debug signing for validation | Open | Store keystore + version plan without casual cert swap |
@@ -64,6 +63,8 @@ Living register updated through **Step 19.7.30E**. Severity: **Blocker** > **Hig
 | RB-30D-V01–V03 | 30D | Force-stop lifecycle; local DB idempotency; inspect APK not installed |
 | RB-30E-V01 | 30E | Installed A cert fingerprint confirmed; no destructive install; remote tester sheet published |
 | RB-30E-V02 | 30E | Explicit non-closure of two-device / a11y / MLS-window blockers without evidence |
+| RB-30E-V03 | 30E | Bidirectional messaging Pass (syed↔neloy); A→B call signaling Pass; send() ignore no longer clears draft |
+| RB-30B-001 | 30E | Closed — two-device messaging verified on named accounts |
 
 ## 30E manual checklist
 

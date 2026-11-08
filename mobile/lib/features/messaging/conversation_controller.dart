@@ -283,20 +283,29 @@ class ConversationController extends ChangeNotifier {
         .join('\n');
   }
 
-  Future<void> send(String text, {String? clientMessageId}) async {
-    if (_disposed) return;
+  /// Returns `true` when an outgoing row was queued (optimistic or update).
+  /// Returns `false` when send was ignored (no session/conversation/blank).
+  Future<bool> send(String text, {String? clientMessageId}) async {
+    if (_disposed) return false;
     final token = await auth.sessionToken();
     final cid = conversationId;
     final userId = auth.state.userId;
-    if (_disposed || token == null || cid == null || userId == null) return;
+    if (_disposed || token == null || cid == null || userId == null) {
+      DeliveryTiming.record(
+        'send_ignored',
+        0,
+        detail: 'token=${token != null};cid=${cid != null};user=${userId != null}',
+      );
+      return false;
+    }
     final trimmed = text.trim();
-    if (trimmed.isEmpty) return;
+    if (trimmed.isEmpty) return false;
 
     final clientId =
         clientMessageId ?? 'c-${DateTime.now().microsecondsSinceEpoch}';
     final prior = messages.indexWhere((m) => m.clientMessageId == clientId);
     if (prior >= 0 && messages[prior].delivery == ChatDeliveryState.sent) {
-      return;
+      return true;
     }
     final optimistic = ChatMessageView(
       clientMessageId: clientId,
@@ -325,7 +334,7 @@ class ConversationController extends ChangeNotifier {
         createdAt: optimistic.createdAt,
       );
     } catch (error, stack) {
-      if (_disposed) return;
+      if (_disposed) return true;
       final trace = error is MlsSendFailure ? (error.stack ?? stack) : stack;
       if (error is MlsSendFailure) {
         MlsDiagnostics.debugStack(trace);
@@ -344,9 +353,9 @@ class ConversationController extends ChangeNotifier {
         error: null,
       );
       _notify();
-      return;
+      return true;
     }
-    if (_disposed) return;
+    if (_disposed) return true;
     await restoreLocalHistory();
     _applySendResult(
       clientId: clientId,
@@ -355,6 +364,7 @@ class ConversationController extends ChangeNotifier {
       error: result.error,
     );
     _notify();
+    return true;
   }
 
   void _applySendResult({

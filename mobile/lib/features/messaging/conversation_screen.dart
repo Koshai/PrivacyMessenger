@@ -214,11 +214,30 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final text = _input.text;
     setState(() => _submitting = true);
     try {
-      await _controller.send(text);
+      final queued = await _controller.send(text);
       // Draft clears only after the controller accepted responsibility
       // (optimistic outbox row or durable failure state with bubble text).
-      if (mounted && _input.text == text) {
+      if (queued && mounted && _input.text == text) {
         _input.clear();
+      }
+      if (queued && mounted && _scroll.hasClients) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        if (_scroll.hasClients) {
+          await _scroll.animateTo(
+            _scroll.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+          );
+        }
+      }
+      if (!queued && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Message wasn’t sent. Check your connection and try again.',
+            ),
+          ),
+        );
       }
     } finally {
       if (mounted) {
