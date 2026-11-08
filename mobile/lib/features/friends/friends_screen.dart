@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/auth/auth_controller.dart';
 import '../../core/network/api_client.dart';
+import '../../core/ui/app_confirm_dialog.dart';
 import 'friends_controller.dart';
 
 class FriendsScreen extends StatefulWidget {
@@ -95,6 +96,69 @@ class _FriendsScreenState extends State<FriendsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );
+  }
+
+  Future<void> _confirmRemoveFriend(
+    FriendsController controller,
+    String userId,
+    String email,
+  ) async {
+    if (controller.mutating) return;
+    final confirmed = await showAppConfirmDialog(
+      context: context,
+      title: 'Remove friend?',
+      message:
+          'Remove $email from your friends?\n\n'
+          'This only updates your friendship on the server. '
+          'Encrypted messages already saved on this device are not deleted.',
+      cancelLabel: 'Cancel',
+      confirmLabel: 'Remove',
+      isDestructive: true,
+    );
+    if (!confirmed || !mounted || controller.mutating) return;
+    try {
+      await controller.remove(userId);
+      if (!mounted) return;
+      _showMessage('Friend removed');
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      _showMessage(e.message);
+    } catch (_) {
+      if (!mounted) return;
+      _showMessage('Unable to remove friend. Check your connection and retry.');
+    }
+  }
+
+  Future<void> _confirmBlockFriend(
+    FriendsController controller,
+    String userId,
+    String email,
+  ) async {
+    if (controller.mutating) return;
+    final confirmed = await showAppConfirmDialog(
+      context: context,
+      title: 'Block user?',
+      message:
+          'Block $email?\n\n'
+          'They will be removed from your friends if needed, and they will not '
+          'be able to send you new friend requests. '
+          'Encrypted messages already saved on this device are not deleted.',
+      cancelLabel: 'Cancel',
+      confirmLabel: 'Block',
+      isDestructive: true,
+    );
+    if (!confirmed || !mounted || controller.mutating) return;
+    try {
+      await controller.block(userId);
+      if (!mounted) return;
+      _showMessage('User blocked');
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      _showMessage(e.message);
+    } catch (_) {
+      if (!mounted) return;
+      _showMessage('Unable to block user. Check your connection and retry.');
+    }
   }
 
   @override
@@ -199,28 +263,29 @@ class _FriendsScreenState extends State<FriendsScreen> {
                                 tooltip: 'Remove friend',
                                 onPressed: controller.mutating
                                     ? null
-                                    : () async {
-                                        try {
-                                          await controller.remove(friend.userId);
-                                        } on ApiException catch (e) {
-                                          _showMessage(e.message);
-                                        }
-                                      },
-                                icon: const Icon(Icons.person_remove_outlined),
+                                    : () => _confirmRemoveFriend(
+                                          controller,
+                                          friend.userId,
+                                          friend.email,
+                                        ),
+                                icon: const Icon(
+                                  Icons.person_remove_outlined,
+                                  semanticLabel: 'Remove friend',
+                                ),
                               ),
                               IconButton(
                                 tooltip: 'Block',
                                 onPressed: controller.mutating
                                     ? null
-                                    : () async {
-                                        try {
-                                          await controller.block(friend.userId);
-                                          _showMessage('User blocked');
-                                        } on ApiException catch (e) {
-                                          _showMessage(e.message);
-                                        }
-                                      },
-                                icon: const Icon(Icons.block),
+                                    : () => _confirmBlockFriend(
+                                          controller,
+                                          friend.userId,
+                                          friend.email,
+                                        ),
+                                icon: const Icon(
+                                  Icons.block,
+                                  semanticLabel: 'Block user',
+                                ),
                               ),
                             ],
                           ),

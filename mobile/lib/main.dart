@@ -13,6 +13,7 @@ import 'core/crypto/mls_session_manager.dart';
 import 'core/network/api_client.dart';
 import 'core/network/api_config.dart';
 import 'core/theme/app_theme.dart';
+import 'core/ui/app_error_panel.dart';
 
 import 'features/calling/call_auth.dart';
 import 'features/calling/call_auth_session.dart';
@@ -117,11 +118,19 @@ class _PrivateMessengerAppState extends State<PrivateMessengerApp> {
 
           case AuthStatus.unavailable:
             home = Scaffold(
-              body: Center(
-                child: FilledButton(
-                  onPressed: _authController.restore,
-                  child: const Text('Try again'),
-                ),
+              body: AppErrorPanel(
+                title: 'Can’t reach Private Messenger',
+                message:
+                    'We couldn’t confirm your saved sign-in. '
+                    'Check your internet connection and try again. '
+                    'If this keeps happening, clear the saved sign-in on this '
+                    'device and sign in again.',
+                primaryLabel: 'Try again',
+                onPrimary: _authController.restore,
+                secondaryLabel: 'Clear saved sign-in',
+                onSecondary: () {
+                  unawaited(_authController.clearLocalSession());
+                },
               ),
             );
             break;
@@ -352,12 +361,32 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
     super.dispose();
   }
 
+  void _retryOpenMessaging() {
+    if (_shellDisposed) return;
+    setState(() {
+      _historyUnavailable = false;
+      _messaging = null;
+    });
+    unawaited(_openMessaging());
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_historyUnavailable) {
-      return const Scaffold(
-        body: Center(
-          child: Text('Encrypted history could not be opened'),
+      return Scaffold(
+        body: AppErrorPanel(
+          icon: Icons.lock_outline,
+          title: 'Encrypted history unavailable',
+          message:
+              'Private Messenger couldn’t open your encrypted conversation '
+              'history on this device. Your messages were not deleted. '
+              'Try again, or log out if you need to leave this screen.',
+          primaryLabel: 'Try again',
+          onPrimary: _retryOpenMessaging,
+          secondaryLabel: 'Log out',
+          onSecondary: () {
+            unawaited(widget.onLogout());
+          },
         ),
       );
     }

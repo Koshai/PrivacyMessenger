@@ -7,6 +7,7 @@ import 'package:private_messenger/core/auth/auth_controller.dart';
 import 'package:private_messenger/core/auth/auth_state.dart';
 import 'package:private_messenger/core/auth/session_store.dart';
 import 'package:private_messenger/core/network/api_client.dart';
+import 'package:private_messenger/core/ui/app_error_panel.dart';
 import 'package:private_messenger/features/auth/auth_flow.dart';
 import 'package:private_messenger/features/auth/models/auth_identity.dart';
 import 'package:private_messenger/features/auth/models/auth_session.dart';
@@ -63,11 +64,19 @@ class _AuthShellHarnessState extends State<_AuthShellHarness> {
             );
           case AuthStatus.unavailable:
             home = Scaffold(
-              body: Center(
-                child: FilledButton(
-                  onPressed: widget.authController.restore,
-                  child: const Text('Try again'),
-                ),
+              body: AppErrorPanel(
+                title: 'Can’t reach Private Messenger',
+                message:
+                    'We couldn’t confirm your saved sign-in. '
+                    'Check your internet connection and try again. '
+                    'If this keeps happening, clear the saved sign-in on this '
+                    'device and sign in again.',
+                primaryLabel: 'Try again',
+                onPrimary: widget.authController.restore,
+                secondaryLabel: 'Clear saved sign-in',
+                onSecondary: () {
+                  widget.authController.clearLocalSession();
+                },
               ),
             );
         }
@@ -206,8 +215,54 @@ void main() {
 
     await tester.tap(find.text('Log out'));
     await tester.pumpAndSettle();
+    expect(find.text('Log out?'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Log out'));
+    await tester.pumpAndSettle();
 
     expect(find.text('Send verification code'), findsOneWidget);
     expect(store.session, isNull);
+  });
+
+  testWidgets('unavailable session shows explanation and recovery actions', (
+    tester,
+  ) async {
+    final client = MockClient((_) async => http.Response('{}', 500));
+    final api = ApiClient(
+      client: client,
+      baseUri: Uri.parse('http://localhost:4000'),
+    );
+    final store = FakeSessionStore()..session = session();
+    final controller = AuthController(
+      store: store,
+      validate: (_) async {
+        throw const ApiException(
+          'offline',
+          kind: ApiErrorKind.network,
+        );
+      },
+      revoke: (_) async {},
+    );
+    addTearDown(() {
+      controller.dispose();
+      client.close();
+    });
+
+    await tester.pumpWidget(
+      _AuthShellHarness(authController: controller, apiClient: api),
+    );
+
+    await controller.restore();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Can’t reach Private Messenger'), findsOneWidget);
+    expect(find.text('Try again'), findsOneWidget);
+    expect(find.text('Clear saved sign-in'), findsOneWidget);
+
+    await tester.tap(find.text('Clear saved sign-in'));
+    await tester.pumpAndSettle();
+
+    expect(controller.state.status, AuthStatus.signedOut);
+    expect(store.session, isNull);
+    expect(find.text('Send verification code'), findsOneWidget);
   });
 }

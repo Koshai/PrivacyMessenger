@@ -180,4 +180,146 @@ void main() {
     expect(find.text('Accept'), findsOneWidget);
     expect(find.text('Reject'), findsOneWidget);
   });
+
+  testWidgets('removing a friend requires confirmation and cancel is safe', (
+    tester,
+  ) async {
+    var removeCalls = 0;
+    final mock = MockClient((request) async {
+      if (request.method == 'DELETE' &&
+          request.url.path.startsWith('/friends/') &&
+          !request.url.path.contains('blocks')) {
+        removeCalls++;
+        return http.Response('', 204);
+      }
+      if (request.url.path == '/friends') {
+        return http.Response(
+          '{"friends":[{"user_id":"u2","email":"friend@example.com","since":"2026-01-01T00:00:00Z"}]}',
+          200,
+        );
+      }
+      if (request.url.path == '/friends/count') {
+        return http.Response('{"count":1}', 200);
+      }
+      if (request.url.path.contains('/requests/')) {
+        return http.Response('{"requests":[]}', 200);
+      }
+      if (request.url.path == '/friends/blocks') {
+        return http.Response('{"blocked":[]}', 200);
+      }
+      return http.Response('missing', 404);
+    });
+
+    final store = FakeSessionStore()
+      ..session = AuthSession(
+        userId: 'me',
+        deviceId: 'device',
+        token: 'token',
+        expiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
+      );
+
+    final auth = AuthController(
+      store: store,
+      validate: (_) async => AuthIdentity(
+        userId: 'me',
+        deviceId: 'device',
+        expiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
+      ),
+      revoke: (_) async {},
+    );
+    addTearDown(auth.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: FriendsScreen(
+          apiClient: ApiClient(
+            client: mock,
+            baseUri: Uri.parse('http://localhost:4000'),
+          ),
+          authController: auth,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Remove friend'));
+    await tester.pumpAndSettle();
+    expect(find.text('Remove friend?'), findsOneWidget);
+
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(removeCalls, 0);
+    expect(find.text('friend@example.com'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Remove friend'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(TextButton, 'Remove'));
+    await tester.pumpAndSettle();
+    expect(removeCalls, 1);
+  });
+
+  testWidgets('blocking a friend requires confirmation', (tester) async {
+    var blockCalls = 0;
+    final mock = MockClient((request) async {
+      if (request.method == 'POST' && request.url.path.contains('/blocks')) {
+        blockCalls++;
+        return http.Response('', 204);
+      }
+      if (request.url.path == '/friends') {
+        return http.Response(
+          '{"friends":[{"user_id":"u2","email":"friend@example.com","since":"2026-01-01T00:00:00Z"}]}',
+          200,
+        );
+      }
+      if (request.url.path == '/friends/count') {
+        return http.Response('{"count":1}', 200);
+      }
+      if (request.url.path.contains('/requests/')) {
+        return http.Response('{"requests":[]}', 200);
+      }
+      if (request.url.path == '/friends/blocks') {
+        return http.Response('{"blocked":[]}', 200);
+      }
+      return http.Response('missing', 404);
+    });
+
+    final store = FakeSessionStore()
+      ..session = AuthSession(
+        userId: 'me',
+        deviceId: 'device',
+        token: 'token',
+        expiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
+      );
+
+    final auth = AuthController(
+      store: store,
+      validate: (_) async => AuthIdentity(
+        userId: 'me',
+        deviceId: 'device',
+        expiresAt: DateTime.now().toUtc().add(const Duration(hours: 1)),
+      ),
+      revoke: (_) async {},
+    );
+    addTearDown(auth.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: FriendsScreen(
+          apiClient: ApiClient(
+            client: mock,
+            baseUri: Uri.parse('http://localhost:4000'),
+          ),
+          authController: auth,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Block'));
+    await tester.pumpAndSettle();
+    expect(find.text('Block user?'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Block'));
+    await tester.pumpAndSettle();
+    expect(blockCalls, 1);
+  });
 }
