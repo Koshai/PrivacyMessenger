@@ -6,10 +6,10 @@ Single index of physical-device evidence. Detail matrices: 30B messaging, 30C ca
 
 | Role | Identity | App | Signing SHA-256 | Status |
 | --- | --- | --- | --- | --- |
-| A | SM-S938U `R5CXC2SA8HJ`, Android 17 | `1.0.0` / versionCode `1`, lastUpdate 2026-11-07 23:17:41 | `b694351d88992798ea347584901d77247591010cbcec4e77a2d115be4a803e85` (Android Debug) | Attached; **keyguard locked** during 30E window |
+| A | SM-S938U `R5CXC2SA8HJ`, Android 17 | `1.0.0` / versionCode `1`, lastUpdate 2026-11-07 23:17:41 | `b694351d88992798ea347584901d77247591010cbcec4e77a2d115be4a803e85` (Android Debug) | Attached; **unlocked** for 30E retest |
 | B | Second handset | — | Unknown (do not assume match) | **Not attached** (ADB: only A + offline `emulator-5554`) |
 
-**Git tip at 30E:** `ae4d2fb7f1d2db04cd4507cbc03d4bfd57b5aa1c` (matches `origin/master`).
+**Git tip at 30E docs commit:** `e3bff3ef8c44d1fd9f2d6c89b4bf11ee63629eac`. Retest below after owner unlock.
 
 **Policy:** Do not mark media Pass from SDP/ICE/UI alone. No uninstall/clear/logout on established installs. Remote tester sheet: `ANDROID_EXTERNAL_TESTER_30E.md`.
 
@@ -68,25 +68,34 @@ Prior pre-UX two-device video does **not** close these rows.
 | --- | --- | --- |
 | L-01 | Bg/fg reopen chat (A) | Pass (30D) |
 | L-02 | Force-stop cold start + session (A) | Pass (30D) |
-| L-03 | Lock → unlock UI resume | **Incomplete** — 30E still on PIN keyguard; PIN not requested |
-| L-04 | Network loss backgrounded | Not run |
+| L-03 | Lock → unlock UI resume | **Pass** (retest) — after owner unlock, app resumed signed-in; history/chats intact |
+| L-04 | Network loss backgrounded | Partial — transient “Can’t reach Private Messenger…” banner observed in conversation; local history still visible; Refresh restored list |
 
-## Accessibility smoke (physical)
+## Accessibility smoke (physical) — Device A retest
+
+TalkBack briefly enabled (`com.google.android.marvin.talkback`); system tutorial appeared (service active). TalkBack then disabled via secure settings; **font_scale restored to 1.0**. No private message bodies or emails recorded in evidence (handles redacted).
 
 | ID | Check | Status | Notes |
 | --- | --- | --- | --- |
-| X-01 | TalkBack critical path | **Incomplete** | Device locked entire 30E automation window |
-| X-02 | Large font | Incomplete | Same |
-| X-03–X-08 | OTP/tabs/status/safety/call/dialogs/errors | Incomplete / prior 29E code only | Do not claim physical pass |
+| X-01 | TalkBack service engages | **Pass** | Service on; tutorial overlay confirmed; app nodes expose content-desc |
+| X-01b | TalkBack full gesture navigation of all screens | **Partial** | Tutorial blocked scripted swipe-nav; structural labels verified after TB off |
+| X-02 | Large font (1.5×) | **Pass** | Chats/Friends/Settings/Log out/tabs and chat Send/Audio/Video/Back remained present with tappable bounds; font restored |
+| X-03 | OTP / login | **Skipped** | Session preserved — no logout |
+| X-04 | Chats / Friends / Settings | **Pass** | Tab labels `Chats/Friends/Settings Tab N of 3`; Refresh chats/friends; privacy copy on Settings |
+| X-05 | Message statuses / retry guidance | **Pass** | Conversation content-desc includes Received / Sent to server + honest server-vs-device wording |
+| X-06 | Safety-number screen | **Pending** | Entry is call-flow “Compare safety number”; no live call without Device B |
+| X-07 | Call controls | **Partial** | Audio/Video call buttons labeled and present; live Accept/Decline/Hang up not exercised |
+| X-08 | Error / permission recovery | **Partial** | Offline/reachability banner readable; permission-deny flows not re-run |
 
-No new inaccessible critical action filed — smoke did not execute.
+No inaccessible critical action found on exercised paths. Live call a11y and safety-number remain Device-B gated.
 
-## Security / data preservation (30E observation window)
+## Security / data preservation (30E retest)
 
 | Check | Result |
 | --- | --- |
-| Unexpected sign-out | Not observed (app pid still present; UI behind keyguard) |
-| Destructive logout / account switch tested | **Not performed** (forbidden on established) |
+| Unexpected sign-out | **No** — remained signed in after unlock/TalkBack/font tests |
+| Encrypted history loss | **No** — chat rows and message statuses still present |
+| Destructive logout / account switch tested | **Not performed** |
 | MLS/history cross-store crash window | Remains **open** (RB-30B-002) |
 | Premature call auth UI / stuck cam | Not exercised (no live calls) |
 
@@ -94,9 +103,9 @@ No new inaccessible critical action filed — smoke did not execute.
 
 | Gate | Result |
 | --- | --- |
-| One-device data preservation | Met (prior) |
+| One-device data preservation | Met |
+| One-device a11y smoke (A) | **Mostly met** (X-06/X-07 live call pending) |
 | Two-device messaging | **Not met** |
 | Two-device audio/video | **Not met** |
-| Accessibility physical smoke | **Not met** |
-| Narrow code fix required this milestone | **No** (blocked on devices/unlock, not a new defect) |
+| Narrow code fix required | **No** |
 | RC readiness | **NOT READY** |

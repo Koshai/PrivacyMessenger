@@ -4,7 +4,7 @@
 
 **NOT READY**
 
-Mandatory real-device two-party acceptance did not run: Device B was not available, and Device A remained behind a secure keyguard for the 30E accessibility window. Outstanding security/data-preservation items were reviewed; none were closed without evidence.
+Device A accessibility smoke completed after unlock (TalkBack engage, 1.5× font, Chats/Friends/Settings, message status labels). Mandatory two-party messaging and real-media audio/video still did not run — Device B remains unavailable. Outstanding security/data-preservation items stay open without two-device evidence.
 
 Do not publish or distribute a new APK from this milestone.
 
@@ -17,7 +17,7 @@ Do not publish or distribute a new APK from this milestone.
 | Bidirectional encrypted messaging on two physical devices after UX batches | **No** — Device B absent (30E) |
 | Bidirectional audio + video with real media evidence | **No** — Device B absent |
 | TURN selected-pair / hard network transitions | **No** |
-| Physical TalkBack / large-font critical-path smoke | **No** — keyguard locked throughout 30E poll |
+| Physical TalkBack / large-font critical-path smoke (Device A) | **Mostly yes** — retest after unlock; live call/safety-number still pending |
 | Explicit review of logout/MLS wipe + cross-store crash window | Yes — remain open/disclosed (RB-30A-001, RB-30B-002) |
 | Store-grade release signing + R8 validation | **No** (debug signing by design for validation) |
 | Crash-reporting / support diagnostics policy | Deferred |
@@ -45,8 +45,8 @@ This milestone selects **NOT READY**.
 
 ## What remains before any “controlled beta review” status
 
-1. Unlock Device A (owner); complete TalkBack/large-font rows X-01+.
-2. Attach or remotely execute Device B checklist; fill messaging M-01+ and calling A/V rows with **real** content/media evidence.
+1. Attach or remotely execute Device B checklist (`ANDROID_EXTERNAL_TESTER_30E.md`); fill messaging M-01+ and calling A/V rows with **real** content/media evidence.
+2. On a live call, verify safety-number compare + TalkBack on Accept/Decline/Hang up (X-06/X-07 residual).
 3. Keep RB-30A-001 / RB-30B-002 disclosed; do not pretend they are fixed.
 4. Agree how external testers receive APKs without swapping signing identities on established devices.
 

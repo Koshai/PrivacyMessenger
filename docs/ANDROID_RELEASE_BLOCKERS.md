@@ -42,7 +42,7 @@ Living register updated through **Step 19.7.30E**. Severity: **Blocker** > **Hig
 | ID | Severity | Class | Notes | Status | Close evidence |
 | --- | --- | --- | --- | --- | --- |
 | RB-30D-001 | **High** | **Must fix before controlled external beta** | Device B absent → two-device gate unmet | **Reconfirmed 30E** | Attach B or remote sheet results |
-| RB-30D-002 | **Medium** | **Must fix before controlled external beta** | Physical TalkBack/large-font incomplete | **Reconfirmed 30E** (keyguard) | X-01–X-08 unlocked |
+| RB-30D-002 | **Medium** | Narrowed — remaining live-call/safety a11y | Device A TalkBack+1.5× font smoke **passed** on retest; safety-number + live call controls still need Device B | **Partially closed (A)**; residual open | X-06/X-07 with peer call |
 | RB-30D-003 | **Low** | Deferred improvement | No custom crash handler / local diagnostic export | Open | Approved privacy-preserving design |
 | RB-30D-004 | **Low** | Must fix before public release | versionCode `1`; debug signing for validation | Open | Store keystore + version plan without casual cert swap |
 
@@ -70,7 +70,7 @@ Living register updated through **Step 19.7.30E**. Severity: **Blocker** > **Hig
 ### Device A — SM-S938U
 
 - [x] Package/signing/ABI recorded (debug cert match known validation identity)
-- [ ] Unlocked for TalkBack / large-font smoke
+- [x] Unlocked TalkBack + 1.5× font smoke (retest); residual safety-number/live call a11y
 - [ ] Live messaging with peer
 - [ ] Live A/V with peer
 
