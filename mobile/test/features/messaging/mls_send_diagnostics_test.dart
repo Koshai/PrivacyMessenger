@@ -199,7 +199,8 @@ void main() {
     expect(harness.controller.messages, hasLength(1));
     final message = harness.controller.messages.single;
     expect(message.delivery, ChatDeliveryState.failed);
-    expect(message.error, 'Message could not be sent.');
+    expect(message.error, isNull);
+    expect(message.delivery, ChatDeliveryState.failed);
     expect(message.error, isNot(contains(_secret)));
     expect(notes, greaterThanOrEqualTo(2));
     expect(
@@ -228,7 +229,7 @@ void main() {
       harness.controller.messages.single.delivery,
       ChatDeliveryState.failed,
     );
-    expect(harness.controller.messages.single.error, 'Send failed');
+    expect(harness.controller.messages.single.error, isNull);
     final event = MlsDiagnostics.events.singleWhere(
       (e) => e.stage == 'send_envelope',
     );

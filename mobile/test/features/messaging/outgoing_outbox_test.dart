@@ -381,7 +381,7 @@ void main() {
       myUserId: _me,
     );
     expect(views.single.delivery, ChatDeliveryState.uncertain);
-    expect(views.single.error, contains('unconfirmed'));
+    expect(views.single.error, isNull);
   });
 
   test('two consecutive messages encrypt in order once each', () async {

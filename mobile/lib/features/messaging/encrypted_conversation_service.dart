@@ -384,9 +384,10 @@ class EncryptedConversationService {
         delivery: LocalMessageDelivery.uncertain,
       );
       MlsDiagnostics.record(stage: 'send_envelope', error: error);
+      // User-facing copy lives in message_status.dart (no MLS jargon here).
       return pending.copyWith(
         delivery: ChatDeliveryState.uncertain,
-        error: 'Send unconfirmed. Resubmit only with the same ciphertext.',
+        error: null,
       );
     } on ApiException catch (error) {
       if (error.kind == ApiErrorKind.timeout) {
@@ -399,7 +400,7 @@ class EncryptedConversationService {
         MlsDiagnostics.record(stage: 'send_envelope', error: error);
         return pending.copyWith(
           delivery: ChatDeliveryState.uncertain,
-          error: 'Send unconfirmed. Resubmit only with the same ciphertext.',
+          error: null,
         );
       }
       if (error.statusCode == 409) {
@@ -416,7 +417,7 @@ class EncryptedConversationService {
         MlsDiagnostics.record(stage: 'send_envelope', error: error);
         return pending.copyWith(
           delivery: ChatDeliveryState.blocked,
-          error: 'Server rejected conflicting ciphertext for this message id.',
+          error: null,
         );
       }
       span.total('send_submit_failed');
@@ -428,7 +429,7 @@ class EncryptedConversationService {
       MlsDiagnostics.record(stage: 'send_envelope', error: error);
       return pending.copyWith(
         delivery: ChatDeliveryState.failed,
-        error: 'Send failed',
+        error: null,
       );
     } catch (error) {
       span.total('send_submit_failed');
@@ -440,7 +441,7 @@ class EncryptedConversationService {
       MlsDiagnostics.record(stage: 'send_envelope', error: error);
       return pending.copyWith(
         delivery: ChatDeliveryState.failed,
-        error: 'Send failed',
+        error: null,
       );
     }
   }
@@ -969,14 +970,13 @@ class EncryptedConversationService {
     );
   }
 
+  /// Presentation copy is owned by [messageStatusFor]; keep stored errors null
+  /// so ordinary users never see MLS/outbox jargon from history restore.
   String? _recoveryError(ChatDeliveryState delivery) {
     switch (delivery) {
       case ChatDeliveryState.uncertain:
-        return 'Send unconfirmed. Resubmit only with the same ciphertext.';
       case ChatDeliveryState.blocked:
-        return 'Cannot safely retry this message.';
       case ChatDeliveryState.failed:
-        return 'Send failed';
       case ChatDeliveryState.sending:
       case ChatDeliveryState.sent:
       case ChatDeliveryState.received:

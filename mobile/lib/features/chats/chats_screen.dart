@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../../core/auth/auth_controller.dart';
 import '../../core/crypto/mls_session_manager.dart';
 import '../../core/network/api_client.dart';
+import '../../core/ui/app_empty_state.dart';
+import '../../core/ui/app_error_panel.dart';
 import '../../features/friends/models/friend.dart';
 import '../calling/call_controller.dart';
 import '../messaging/conversation_screen.dart';
@@ -18,6 +20,7 @@ class ChatsScreen extends StatefulWidget {
     this.messaging,
     this.callController,
     this.realtime,
+    this.onOpenFriends,
   });
 
   final ApiClient? apiClient;
@@ -26,6 +29,9 @@ class ChatsScreen extends StatefulWidget {
   final EncryptedConversationService? messaging;
   final CallController? callController;
   final RealtimeClient? realtime;
+
+  /// Switches to the Friends tab (provided by [MainNavigation]).
+  final VoidCallback? onOpenFriends;
 
   @override
   State<ChatsScreen> createState() => _ChatsScreenState();
@@ -99,40 +105,20 @@ class _ChatsScreenState extends State<ChatsScreen> {
       return const Center(child: CircularProgressIndicator());
     }
     if (_error != null) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(_error!),
-            const SizedBox(height: 12),
-            FilledButton(onPressed: _refresh, child: const Text('Retry')),
-          ],
-        ),
+      return AppErrorPanel(
+        title: 'Conversations unavailable',
+        message: _error!,
+        primaryLabel: 'Retry',
+        onPrimary: _refresh,
       );
     }
     if (_friends.isEmpty) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.chat_bubble_outline, size: 72),
-              SizedBox(height: 20),
-              Text(
-                'No conversations yet',
-                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
-                textAlign: TextAlign.center,
-              ),
-              SizedBox(height: 12),
-              Text(
-                'Add a friend to start a conversation.',
-                style: TextStyle(fontSize: 18),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
-        ),
+      return AppEmptyState(
+        icon: Icons.chat_bubble_outline,
+        title: 'No conversations yet',
+        message: 'Add a friend to start an encrypted conversation.',
+        actionLabel: widget.onOpenFriends == null ? null : 'Add friends',
+        onAction: widget.onOpenFriends,
       );
     }
 

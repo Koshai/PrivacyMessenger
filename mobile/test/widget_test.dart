@@ -34,6 +34,18 @@ void main() {
       await tester.pumpWidget(const MaterialApp(home: MainNavigation()));
 
       expect(find.text('No conversations yet'), findsOneWidget);
+      expect(find.text('Add friends'), findsOneWidget);
+    });
+
+    testWidgets('Empty chats Add friends opens Friends tab', (tester) async {
+      await tester.pumpWidget(const MaterialApp(home: MainNavigation()));
+
+      await tester.tap(find.text('Add friends'));
+      await tester.pumpAndSettle();
+
+      final bar = tester.widget<NavigationBar>(find.byType(NavigationBar));
+      expect(bar.selectedIndex, 1);
+      expect(find.text('Your friends are private'), findsWidgets);
     });
   });
 }

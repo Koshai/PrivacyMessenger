@@ -3,10 +3,14 @@ import 'package:flutter/material.dart';
 import '../../core/auth/auth_controller.dart';
 import '../../core/crypto/mls_session_manager.dart';
 import '../../core/network/api_client.dart';
+import '../../core/ui/app_empty_state.dart';
+import '../../core/ui/app_error_panel.dart';
+import '../../core/ui/connectivity_banner.dart';
 import '../calling/call_controller.dart';
 import '../calling/models/call_session.dart';
 import 'conversation_controller.dart';
 import 'encrypted_conversation_service.dart';
+import 'message_status_text.dart';
 import 'models/envelope.dart';
 import 'realtime_client.dart';
 
@@ -40,10 +44,12 @@ class _ConversationScreenState extends State<ConversationScreen> {
   late final ConversationController _controller;
   final _input = TextEditingController();
   final _scroll = ScrollController();
+  bool _submitting = false;
 
   @override
   void initState() {
     super.initState();
+    _input.addListener(_onDraftChanged);
     _controller = ConversationController(
       api: widget.apiClient,
       auth: widget.authController,
@@ -56,8 +62,13 @@ class _ConversationScreenState extends State<ConversationScreen> {
     )..open();
   }
 
+  void _onDraftChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    _input.removeListener(_onDraftChanged);
     _input.dispose();
     _scroll.dispose();
     _controller.dispose();
@@ -70,6 +81,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
       animation: _controller,
       builder: (context, _) {
         return Scaffold(
+          resizeToAvoidBottomInset: true,
           appBar: AppBar(
             title: Text(widget.peerEmail),
             actions: [
@@ -91,15 +103,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   ),
                 ),
               ],
-              if (_controller.offline)
-                const Padding(
-                  padding: EdgeInsets.only(right: 12),
-                  child: Icon(Icons.cloud_off, semanticLabel: 'Offline'),
-                ),
             ],
           ),
           body: Column(
             children: [
+              ConnectivityBanner(state: _controller.linkState),
               if (_controller.keyChangeWarning != null)
                 MaterialBanner(
                   content: Text(_controller.keyChangeWarning!),
@@ -124,6 +132,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
                           maxLines: 4,
                           textInputAction: TextInputAction.send,
                           onSubmitted: (_) => _submit(),
+                          enabled: !_submitting &&
+                              _controller.loadState ==
+                                  ConversationLoadState.ready,
                           decoration: const InputDecoration(
                             hintText: 'Message',
                             border: OutlineInputBorder(),
@@ -133,11 +144,14 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       const SizedBox(width: 8),
                       IconButton(
                         tooltip: 'Send',
-                        onPressed: _controller.loadState ==
-                                ConversationLoadState.ready
-                            ? _submit
-                            : null,
-                        icon: const Icon(Icons.send),
+                        onPressed: _canSend ? _submit : null,
+                        icon: _submitting
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.send, semanticLabel: 'Send'),
                       ),
                     ],
                   ),
@@ -150,28 +164,35 @@ class _ConversationScreenState extends State<ConversationScreen> {
     );
   }
 
+  bool get _canSend =>
+      !_submitting &&
+      _controller.loadState == ConversationLoadState.ready &&
+      _input.text.trim().isNotEmpty;
+
   Widget _buildBody() {
     switch (_controller.loadState) {
       case ConversationLoadState.loading:
       case ConversationLoadState.idle:
         return const Center(child: CircularProgressIndicator());
       case ConversationLoadState.error:
-        return Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(_controller.errorMessage ?? 'Error'),
-              const SizedBox(height: 12),
-              FilledButton(
-                onPressed: _controller.open,
-                child: const Text('Retry'),
-              ),
-            ],
-          ),
+        return AppErrorPanel(
+          icon: Icons.lock_outline,
+          title: 'Conversation unavailable',
+          message: _controller.errorMessage ??
+              'Unable to open this conversation right now. '
+                  'Your encrypted messages were not deleted.',
+          primaryLabel: 'Try again',
+          onPrimary: _controller.open,
         );
       case ConversationLoadState.ready:
         if (_controller.messages.isEmpty) {
-          return const Center(child: Text('No messages yet'));
+          return const AppEmptyState(
+            icon: Icons.lock_outline,
+            title: 'No messages yet',
+            message:
+                'Messages you send are end-to-end encrypted on this device. '
+                'Say hello to start the conversation.',
+          );
         }
         return ListView.builder(
           controller: _scroll,
@@ -189,9 +210,21 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   Future<void> _submit() async {
+    if (!_canSend) return;
     final text = _input.text;
-    _input.clear();
-    await _controller.send(text);
+    setState(() => _submitting = true);
+    try {
+      await _controller.send(text);
+      // Draft clears only after the controller accepted responsibility
+      // (optimistic outbox row or durable failure state with bubble text).
+      if (mounted && _input.text == text) {
+        _input.clear();
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _submitting = false);
+      }
+    }
   }
 }
 
@@ -212,10 +245,6 @@ class ChatMessageBubble extends StatelessWidget {
     final color = message.isMine
         ? Theme.of(context).colorScheme.primaryContainer
         : Theme.of(context).colorScheme.surfaceContainerHighest;
-    final status = deliveryStatusLabel(
-      delivery: message.delivery,
-      isMine: message.isMine,
-    );
 
     return Align(
       alignment: align,
@@ -232,36 +261,9 @@ class ChatMessageBubble extends StatelessWidget {
               children: [
                 Text(message.plaintext),
                 const SizedBox(height: 6),
-                if (message.error != null && message.error!.isNotEmpty) ...[
-                  Text(
-                    message.error!,
-                    style: Theme.of(context).textTheme.labelSmall,
-                  ),
-                  const SizedBox(height: 6),
-                ],
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (status != null)
-                      Text(
-                        status,
-                        style: Theme.of(context).textTheme.labelSmall,
-                      ),
-                    if (message.isMine &&
-                        (message.delivery == ChatDeliveryState.failed ||
-                            message.delivery ==
-                                ChatDeliveryState.uncertain)) ...[
-                      const SizedBox(width: 8),
-                      TextButton(
-                        onPressed: onRetry,
-                        child: Text(
-                          message.delivery == ChatDeliveryState.uncertain
-                              ? 'Resubmit'
-                              : 'Retry',
-                        ),
-                      ),
-                    ],
-                  ],
+                MessageStatusText(
+                  message: message,
+                  onResubmitSame: onRetry,
                 ),
               ],
             ),

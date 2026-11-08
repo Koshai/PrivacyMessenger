@@ -148,7 +148,7 @@ void main() {
     expect(views, hasLength(1));
     expect(views.single.plaintext, 'stuck');
     expect(views.single.delivery, ChatDeliveryState.blocked);
-    expect(views.single.error, contains('Cannot safely retry'));
+    expect(views.single.error, isNull);
 
     final auth = AuthController(
       store: _FakeSessionStore(),

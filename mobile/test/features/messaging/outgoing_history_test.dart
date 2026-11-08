@@ -163,7 +163,7 @@ void main() {
       clientMessageId: 'out-timeout',
     );
     expect(failed.delivery, ChatDeliveryState.uncertain);
-    expect(failed.error, contains('unconfirmed'));
+    expect(failed.error, isNull);
     expect(engine.encryptCalls, 1);
     final row = (await store.listConversation(_conv)).single;
     expect(row.delivery, LocalMessageDelivery.uncertain);

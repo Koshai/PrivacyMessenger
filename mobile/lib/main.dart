@@ -451,6 +451,9 @@ class _MainNavigationState extends State<MainNavigation> {
         messaging: widget.messaging,
         callController: widget.callController,
         realtime: widget.realtime,
+        onOpenFriends: () {
+          setState(() => selectedIndex = 1);
+        },
       ),
       FriendsScreen(
         apiClient: widget.apiClient,

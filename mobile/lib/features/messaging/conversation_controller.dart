@@ -6,6 +6,7 @@ import '../../core/auth/auth_controller.dart';
 import '../../core/crypto/mls_session_manager.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/api_config.dart';
+import '../../core/ui/connectivity_banner.dart';
 import 'delivery_timing.dart';
 import 'encrypted_conversation_service.dart';
 import 'models/envelope.dart';
@@ -79,10 +80,17 @@ class ConversationController extends ChangeNotifier {
   String? conversationId;
   String? keyChangeWarning;
   bool offline = false;
+  ConnectivityBannerState linkState = ConnectivityBannerState.hidden;
   final List<ChatMessageView> messages = [];
   StreamSubscription? _rtSub;
   bool _disposed = false;
   Future<void> _syncChain = Future<void>.value();
+
+  void _setLinkState(ConnectivityBannerState next) {
+    if (linkState == next) return;
+    linkState = next;
+    offline = next != ConnectivityBannerState.hidden;
+  }
 
   void _notify() {
     if (_disposed) return;
@@ -144,12 +152,21 @@ class ConversationController extends ChangeNotifier {
       openSpan.total('open_total');
 
       loadState = ConversationLoadState.ready;
-      offline = false;
+      _setLinkState(ConnectivityBannerState.hidden);
     } catch (e) {
       openSpan.total('open_failed');
-      loadState = ConversationLoadState.error;
-      offline = true;
-      errorMessage = 'Unable to open secure conversation';
+      // Keep durable local history visible; a network failure is not deletion.
+      if (messages.isNotEmpty) {
+        loadState = ConversationLoadState.ready;
+        errorMessage = null;
+        _setLinkState(ConnectivityBannerState.unreachable);
+      } else {
+        loadState = ConversationLoadState.error;
+        _setLinkState(ConnectivityBannerState.unreachable);
+        errorMessage =
+            'Unable to open this conversation right now. '
+            'Your encrypted messages were not deleted.';
+      }
     }
     _notify();
   }
@@ -159,6 +176,10 @@ class ConversationController extends ChangeNotifier {
     _rtSub = _realtime.events.listen((event) {
       final type = _eventType(event);
       DeliveryTiming.record('realtime_event', 0, detail: type);
+      if (type == 'client_reconnecting') {
+        _setLinkState(ConnectivityBannerState.reconnecting);
+        _notify();
+      }
       if (type == 'connected' ||
           type == 'envelope' ||
           type == 'client_reconnecting') {
@@ -200,14 +221,14 @@ class ConversationController extends ChangeNotifier {
       final warning = _service.keyChangeWarning;
       final warningChanged = warning != null && warning != keyChangeWarning;
       if (warningChanged) keyChangeWarning = warning;
-      final wasOffline = offline;
-      offline = false;
-      if (before != _transcriptKey() || warningChanged || wasOffline) {
+      final wasDegraded = linkState != ConnectivityBannerState.hidden;
+      _setLinkState(ConnectivityBannerState.hidden);
+      if (before != _transcriptKey() || warningChanged || wasDegraded) {
         _notify();
       }
     } catch (_) {
       span.total('sync_failed');
-      offline = true;
+      _setLinkState(ConnectivityBannerState.unreachable);
       _notify();
     }
   }
@@ -320,7 +341,7 @@ class ConversationController extends ChangeNotifier {
       _applySendResult(
         clientId: clientId,
         delivery: ChatDeliveryState.failed,
-        error: 'Message could not be sent.',
+        error: null,
       );
       _notify();
       return;
