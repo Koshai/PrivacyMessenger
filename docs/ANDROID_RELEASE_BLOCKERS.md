@@ -41,7 +41,7 @@ Living register updated through **Step 19.7.30E**. Severity: **Blocker** > **Hig
 
 | ID | Severity | Class | Notes | Status | Close evidence |
 | --- | --- | --- | --- | --- | --- |
-| RB-30D-001 | **High** | **Must fix before controlled external beta** | Device B absent → two-device gate unmet | **Reconfirmed 30E** | Attach B or remote sheet results |
+| RB-30D-001 | **High** | **Must fix before controlled external beta** | Emulator B attached + upgraded; **accounts not friended** → two-device messaging/calls still unmet | **Open (narrowed)** | Complete friend request A↔B; then M-01 / A-01 / V-01 |
 | RB-30D-002 | **Medium** | Narrowed — remaining live-call/safety a11y | Device A TalkBack+1.5× font smoke **passed** on retest; safety-number + live call controls still need Device B | **Partially closed (A)**; residual open | X-06/X-07 with peer call |
 | RB-30D-003 | **Low** | Deferred improvement | No custom crash handler / local diagnostic export | Open | Approved privacy-preserving design |
 | RB-30D-004 | **Low** | Must fix before public release | versionCode `1`; debug signing for validation | Open | Store keystore + version plan without casual cert swap |

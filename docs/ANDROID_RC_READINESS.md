@@ -4,7 +4,7 @@
 
 **NOT READY**
 
-Device A accessibility smoke completed after unlock (TalkBack engage, 1.5× font, Chats/Friends/Settings, message status labels). Mandatory two-party messaging and real-media audio/video still did not run — Device B remains unavailable. Outstanding security/data-preservation items stay open without two-device evidence.
+Device A accessibility smoke completed after unlock. Emulator Device B is now online with matching debug signing and a preserved session after `install -r`, but the two signed-in accounts are **not friends with each other**, so mandatory bidirectional messaging and real-media A/V still did not run. Outstanding security/data-preservation items stay open without two-device evidence.
 
 Do not publish or distribute a new APK from this milestone.
 

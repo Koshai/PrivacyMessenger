@@ -6,27 +6,28 @@ Single index of physical-device evidence. Detail matrices: 30B messaging, 30C ca
 
 | Role | Identity | App | Signing SHA-256 | Status |
 | --- | --- | --- | --- | --- |
-| A | SM-S938U `R5CXC2SA8HJ`, Android 17 | `1.0.0` / versionCode `1`, lastUpdate 2026-11-07 23:17:41 | `b694351d88992798ea347584901d77247591010cbcec4e77a2d115be4a803e85` (Android Debug) | Attached; **unlocked** for 30E retest |
-| B | Second handset | — | Unknown (do not assume match) | **Not attached** (ADB: only A + offline `emulator-5554`) |
+| A | SM-S938U `R5CXC2SA8HJ`, Android 17, `arm64-v8a` | `1.0.0` / `1`, lastUpdate 2026-11-07 23:17:41 | `b694351d…803e85` (Android Debug) | Attached; unlocked; **not** reinstalled this retest |
+| B | Emulator `Pixel_8_API_36` / `emulator-5554`, Android 16, `x86_64` | `1.0.0` / `1`, lastUpdate 2026-11-08 00:18:55 | **Same** `b694351d…803e85` | Cold-booted; `adb install -r` validation `app-release.apk`; session retained |
 
-**Git tip at 30E docs commit:** `e3bff3ef8c44d1fd9f2d6c89b4bf11ee63629eac`. Retest below after owner unlock.
+**Git tip before this retest note:** `953a04ba9941cb596732efdbd8e95643c0cc75f6`.
 
 **Policy:** Do not mark media Pass from SDP/ICE/UI alone. No uninstall/clear/logout on established installs. Remote tester sheet: `ANDROID_EXTERNAL_TESTER_30E.md`.
 
-## Phase 0 — Installation safety (30E)
+## Phase 0 — Installation safety (30E emulator retest)
 
 | Check | Result |
 | --- | --- |
-| Package | `com.privatemessenger.private_messenger` |
-| ABI | `arm64-v8a` |
-| New install attempted | **No** — Device B absent; A already on matching debug-signed build; keyguard blocked further UI |
+| Package | `com.privatemessenger.private_messenger` on A and B |
+| Cert match A↔B↔inspect APK | **Yes** (identical debug SHA-256) |
+| Emulator upgrade | `adb install -r` success; Samsung untouched |
 | Backend / coturn changes | None |
+| Friendship A↔B | **No overlap** — A has 2 friends; B has 1 different peer. Historical B↔“Samsung” thread exists on B only; current A chat list does not include B’s account |
 
 ## Messaging
 
 | ID | Check | Env | Expected | Observed | Status | Evidence | Blocker |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| M-01 | Bidirectional encrypted send/receive | A+B validation | Content match both ways | Not run | **Pending** | Device B missing | RB-30B-001 |
+| M-01 | Bidirectional encrypted send/receive | A+B validation | Content match both ways | **Blocked** — accounts not friends with each other | **Pending** | Friend lists disjoint; cannot claim pass | RB-30B-001 |
 | M-02 | Existing history after update | A | Readable history | Pass (30A/30B) | Pass (A) | Prior | — |
 | M-03 | Order + dedup | A+B | No missing/dupes | Not run two-device | **Pending** | — | RB-30B-001 |
 | M-04 | Offline/reconnect | A+B | Honest status + recover | Not run 30E | **Pending** | — | RB-30B-001 |
@@ -101,11 +102,26 @@ No inaccessible critical action found on exercised paths. Live call a11y and saf
 
 ## Gate summary
 
+### Device B one-device smoke (emulator, after `-r`)
+
+| Check | Result |
+| --- | --- |
+| Remained signed in | Pass |
+| Open prior encrypted conversation | Pass (Send + history statuses + Audio/Video; no stuck Hang up) |
+| Bidirectional with A | **Blocked** (not friends) |
+
+## Gate summary
+
 | Gate | Result |
 | --- | --- |
-| One-device data preservation | Met |
+| One-device data preservation (A) | Met |
 | One-device a11y smoke (A) | **Mostly met** (X-06/X-07 live call pending) |
-| Two-device messaging | **Not met** |
+| Emulator install + session (B) | Met |
+| Two-device messaging | **Not met** — friend link required |
 | Two-device audio/video | **Not met** |
 | Narrow code fix required | **No** |
 | RC readiness | **NOT READY** |
+
+### Unblock for next retest
+
+On either device: **Friends → Send request** using the other account’s email, accept on the peer, confirm both Friends lists show each other, then rerun M-01 and A/V matrices. Do not log out of the established Samsung account to “fix” this.
