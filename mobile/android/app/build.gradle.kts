@@ -31,9 +31,13 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            // Validation/share builds: keep the existing debug signing identity so
+            // sideloads match the Samsung install already using this certificate.
+            // Do not introduce a new release keystore without explicit approval.
             signingConfig = signingConfigs.getByName("debug")
+            // Keep native WebRTC / OpenMLS JNI reachable; no R8 for share APKs.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }
