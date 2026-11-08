@@ -282,21 +282,16 @@ class _AuthFooter extends StatelessWidget {
       return const SizedBox.shrink();
     }
     final peerHex = controller.peerFingerprintHex;
-    final truncated = peerHex == null || peerHex.length < 8
-        ? ''
-        : '${peerHex.substring(0, 8).toUpperCase()}…';
     return Column(
       children: [
         Text(
           controller.peerManuallyVerified
-              ? 'Safety number verified'
-              : truncated.isEmpty
-                  ? 'Device authenticated. Safety number not compared yet.'
-                  : 'Device authenticated ($truncated). Safety number not compared yet.',
+              ? 'Safety number verified by you'
+              : 'Call secured. Safety number not compared yet.',
           textAlign: TextAlign.center,
           style: const TextStyle(color: Colors.white70),
         ),
-        if (peerHex != null)
+        if (peerHex != null && peerHex.isNotEmpty)
           TextButton(
             onPressed: () {
               final session = controller.session;

@@ -5,6 +5,7 @@ import '../../core/crypto/mls_session_manager.dart';
 import '../../core/network/api_client.dart';
 import '../../core/ui/app_empty_state.dart';
 import '../../core/ui/app_error_panel.dart';
+import '../../core/ui/avatar_initials.dart';
 import '../../features/friends/models/friend.dart';
 import '../calling/call_controller.dart';
 import '../messaging/conversation_screen.dart';
@@ -127,17 +128,12 @@ class _ChatsScreenState extends State<ChatsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          'Chats',
-          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
-        ),
+        title: const Text('Chats'),
         actions: [
           IconButton(
-            tooltip: 'Refresh',
+            tooltip: 'Refresh chats',
             onPressed: _refreshing ? null : _refresh,
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh, semanticLabel: 'Refresh chats'),
           ),
         ],
       ),
@@ -179,11 +175,7 @@ class _ChatsScreenState extends State<ChatsScreen> {
         final title = chatDisplayName(friend.email);
         final subtitle = preview?.subtitle ?? 'Encrypted chat';
         return ListTile(
-          leading: CircleAvatar(
-            child: Text(
-              title.isNotEmpty ? title[0].toUpperCase() : '?',
-            ),
-          ),
+          leading: InitialsAvatar(email: friend.email, label: title),
           title: Text(
             title,
             maxLines: 1,

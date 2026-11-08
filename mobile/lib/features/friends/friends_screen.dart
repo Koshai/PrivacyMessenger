@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/auth/auth_controller.dart';
 import '../../core/network/api_client.dart';
 import '../../core/ui/app_confirm_dialog.dart';
+import '../../core/ui/avatar_initials.dart';
 import 'friends_controller.dart';
 
 class FriendsScreen extends StatefulWidget {
@@ -167,18 +168,16 @@ class _FriendsScreenState extends State<FriendsScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          'Friends',
-          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
-        ),
+        title: const Text('Friends'),
         actions: [
           if (controller != null)
             IconButton(
-              tooltip: 'Refresh',
+              tooltip: 'Refresh friends',
               onPressed: controller.mutating ? null : controller.refresh,
-              icon: const Icon(Icons.refresh),
+              icon: const Icon(
+                Icons.refresh,
+                semanticLabel: 'Refresh friends',
+              ),
             ),
         ],
       ),
@@ -257,40 +256,45 @@ class _FriendsScreenState extends State<FriendsScreen> {
                       ...controller.friends.map(
                         (friend) => ListTile(
                           contentPadding: EdgeInsets.zero,
-                          title: Text(friend.email),
-                          subtitle: const Text('Private friend'),
-                          trailing: Wrap(
-                            spacing: 8,
-                            children: [
-                              IconButton(
-                                tooltip: 'Remove friend',
-                                onPressed: controller.mutating
-                                    ? null
-                                    : () => _confirmRemoveFriend(
-                                          controller,
-                                          friend.userId,
-                                          friend.email,
-                                        ),
-                                icon: const Icon(
-                                  Icons.person_remove_outlined,
-                                  semanticLabel: 'Remove friend',
-                                ),
+                          leading: InitialsAvatar(email: friend.email),
+                          title: Text(
+                            friend.email,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: const Text('Friend'),
+                          trailing: PopupMenuButton<String>(
+                            enabled: !controller.mutating,
+                            tooltip: 'Friend actions',
+                            onSelected: (value) {
+                              if (value == 'remove') {
+                                _confirmRemoveFriend(
+                                  controller,
+                                  friend.userId,
+                                  friend.email,
+                                );
+                              } else if (value == 'block') {
+                                _confirmBlockFriend(
+                                  controller,
+                                  friend.userId,
+                                  friend.email,
+                                );
+                              }
+                            },
+                            itemBuilder: (context) => const [
+                              PopupMenuItem(
+                                value: 'remove',
+                                child: Text('Remove friend'),
                               ),
-                              IconButton(
-                                tooltip: 'Block',
-                                onPressed: controller.mutating
-                                    ? null
-                                    : () => _confirmBlockFriend(
-                                          controller,
-                                          friend.userId,
-                                          friend.email,
-                                        ),
-                                icon: const Icon(
-                                  Icons.block,
-                                  semanticLabel: 'Block user',
-                                ),
+                              PopupMenuItem(
+                                value: 'block',
+                                child: Text('Block'),
                               ),
                             ],
+                            icon: const Icon(
+                              Icons.more_vert,
+                              semanticLabel: 'Friend actions',
+                            ),
                           ),
                         ),
                       ),
@@ -311,8 +315,15 @@ class _FriendsScreenState extends State<FriendsScreen> {
                       ...controller.incoming.map(
                         (request) => ListTile(
                           contentPadding: EdgeInsets.zero,
-                          title: Text(request.email),
+                          leading: InitialsAvatar(email: request.email),
+                          title: Text(
+                            request.email,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: const Text('Incoming invitation'),
                           trailing: Wrap(
+                            spacing: 4,
                             children: [
                               TextButton(
                                 onPressed: controller.mutating
@@ -324,7 +335,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
                                           _showMessage(e.message);
                                         }
                                       },
-                                child: const Text('Accept'),
+                                child: const Text('Accept invitation'),
                               ),
                               TextButton(
                                 onPressed: controller.mutating
@@ -336,7 +347,7 @@ class _FriendsScreenState extends State<FriendsScreen> {
                                           _showMessage(e.message);
                                         }
                                       },
-                                child: const Text('Reject'),
+                                child: const Text('Decline'),
                               ),
                             ],
                           ),
@@ -359,7 +370,13 @@ class _FriendsScreenState extends State<FriendsScreen> {
                       ...controller.blocked.map(
                         (user) => ListTile(
                           contentPadding: EdgeInsets.zero,
-                          title: Text(user.email),
+                          leading: InitialsAvatar(email: user.email),
+                          title: Text(
+                            user.email,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: const Text('Blocked'),
                           trailing: TextButton(
                             onPressed: controller.mutating
                                 ? null

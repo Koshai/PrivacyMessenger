@@ -88,7 +88,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
               if (widget.callController != null) ...[
                 IconButton(
                   tooltip: 'Audio call',
-                  icon: const Icon(Icons.call),
+                  icon: const Icon(Icons.call, semanticLabel: 'Audio call'),
                   onPressed: () => widget.callController!.startOutgoing(
                     peerUserId: widget.peerUserId,
                     mediaType: CallMediaType.audio,
@@ -96,7 +96,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 ),
                 IconButton(
                   tooltip: 'Video call',
-                  icon: const Icon(Icons.videocam),
+                  icon: const Icon(Icons.videocam, semanticLabel: 'Video call'),
                   onPressed: () => widget.callController!.startOutgoing(
                     peerUserId: widget.peerUserId,
                     mediaType: CallMediaType.video,

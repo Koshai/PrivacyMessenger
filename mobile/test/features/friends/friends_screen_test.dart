@@ -177,8 +177,8 @@ void main() {
 
     await tester.pumpAndSettle();
     expect(find.text('b@example.com'), findsOneWidget);
-    expect(find.text('Accept'), findsOneWidget);
-    expect(find.text('Reject'), findsOneWidget);
+    expect(find.text('Accept invitation'), findsOneWidget);
+    expect(find.text('Decline'), findsOneWidget);
   });
 
   testWidgets('removing a friend requires confirmation and cancel is safe', (
@@ -242,7 +242,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('Remove friend'));
+    await tester.tap(find.byTooltip('Friend actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Remove friend').last);
     await tester.pumpAndSettle();
     expect(find.text('Remove friend?'), findsOneWidget);
 
@@ -251,7 +253,9 @@ void main() {
     expect(removeCalls, 0);
     expect(find.text('friend@example.com'), findsOneWidget);
 
-    await tester.tap(find.byTooltip('Remove friend'));
+    await tester.tap(find.byTooltip('Friend actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Remove friend').last);
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(TextButton, 'Remove'));
     await tester.pumpAndSettle();
@@ -315,7 +319,9 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('Block'));
+    await tester.tap(find.byTooltip('Friend actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Block').last);
     await tester.pumpAndSettle();
     expect(find.text('Block user?'), findsOneWidget);
     await tester.tap(find.widgetWithText(TextButton, 'Block'));

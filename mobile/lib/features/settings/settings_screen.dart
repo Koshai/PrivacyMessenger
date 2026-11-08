@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/network/api_connectivity_screen.dart';
 import '../../core/ui/app_confirm_dialog.dart';
+import 'about_copy.dart';
 import 'privacy_copy.dart';
 
 /// Consequences verified from logout path in `main.dart` +
@@ -31,16 +32,30 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _isLoggingOut = false;
 
+  void _openAbout() {
+    showAboutDialog(
+      context: context,
+      applicationName: AboutCopy.appName,
+      applicationLegalese: null,
+      children: const [
+        SizedBox(height: 12),
+        Text(AboutCopy.summary),
+      ],
+    );
+  }
+
+  void _openLicenses() {
+    showLicensePage(
+      context: context,
+      applicationName: AboutCopy.appName,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          'Settings',
-          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
-        ),
+        title: const Text('Settings'),
       ),
       body: ListView(
         children: [
@@ -48,6 +63,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
             leading: Icon(Icons.lock_outline),
             title: Text(PrivacyCopy.title, style: TextStyle(fontSize: 18)),
             subtitle: Text(PrivacyCopy.subtitle),
+          ),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.info_outline),
+            title: const Text('About'),
+            subtitle: const Text(AboutCopy.appName),
+            onTap: _openAbout,
+          ),
+          ListTile(
+            leading: const Icon(Icons.description_outlined),
+            title: const Text('Open-source licenses'),
+            subtitle: const Text(
+              'Third-party software notices included with this app.',
+            ),
+            onTap: _openLicenses,
           ),
           const Divider(),
           if (kDebugMode) ...[

@@ -30,6 +30,8 @@ void main() {
 
       expect(find.text('Easy Mode'), findsNothing);
       expect(find.text(PrivacyCopy.title), findsOneWidget);
+      expect(find.text('About'), findsOneWidget);
+      expect(find.text('Open-source licenses'), findsOneWidget);
       expect(find.text('Log out'), findsOneWidget);
     });
 
