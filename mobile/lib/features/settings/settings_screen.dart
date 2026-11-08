@@ -1,5 +1,7 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../core/network/api_connectivity_screen.dart';
 import '../../core/ui/app_confirm_dialog.dart';
 import 'privacy_copy.dart';
 
@@ -27,38 +29,44 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  bool easyMode = false;
   bool _isLoggingOut = false;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
+        title: Text(
           'Settings',
-          style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
+          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
         ),
       ),
       body: ListView(
         children: [
-          SwitchListTile(
-            title: const Text('Easy Mode', style: TextStyle(fontSize: 20)),
-            subtitle: const Text(
-              'Larger text and simpler controls',
-              style: TextStyle(fontSize: 16),
-            ),
-            value: easyMode,
-            onChanged: (value) {
-              setState(() => easyMode = value);
-            },
-          ),
-          const Divider(),
           const ListTile(
             leading: Icon(Icons.lock_outline),
             title: Text(PrivacyCopy.title, style: TextStyle(fontSize: 18)),
             subtitle: Text(PrivacyCopy.subtitle),
           ),
           const Divider(),
+          if (kDebugMode) ...[
+            ListTile(
+              leading: const Icon(Icons.cloud_outlined),
+              title: const Text('Connection check'),
+              subtitle: const Text(
+                'Validation builds only — tests reachability of the API.',
+              ),
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const ApiConnectivityScreen(),
+                  ),
+                );
+              },
+            ),
+            const Divider(),
+          ],
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: FilledButton.tonalIcon(

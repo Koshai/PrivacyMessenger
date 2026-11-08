@@ -27,6 +27,7 @@ import 'features/calling/call_screens.dart';
 import 'features/calling/calling_api_client.dart';
 import 'features/calling/webrtc_call_service.dart';
 import 'features/chats/chats_screen.dart';
+import 'features/chats/conversation_peer_index.dart';
 import 'features/friends/friends_screen.dart';
 import 'features/messaging/realtime_client.dart';
 import 'features/settings/settings_screen.dart';
@@ -88,9 +89,7 @@ class _PrivateMessengerAppState extends State<PrivateMessengerApp> {
         switch (state.status) {
           case AuthStatus.initial:
           case AuthStatus.checking:
-            home = const Scaffold(
-              body: Center(child: CircularProgressIndicator()),
-            );
+            home = const _CheckingSignInSplash();
             break;
 
           case AuthStatus.authenticated:
@@ -312,12 +311,22 @@ class _AuthenticatedShellState extends State<_AuthenticatedShell> {
         _history = null;
         return;
       }
+      final peerIndex = ConversationPeerIndex(
+        path: ConversationPeerIndex.pathBesideDatabase(path),
+      );
+      await peerIndex.load();
+      if (!mounted || _shellDisposed) {
+        await history.close();
+        _history = null;
+        return;
+      }
       setState(() {
         _messaging = EncryptedConversationService(
           api: widget.apiClient,
           mls: widget.mls,
           inbox: _bindingInbox,
           history: history,
+          peerIndex: peerIndex,
         );
       });
     } catch (_) {
@@ -486,6 +495,51 @@ class _MainNavigationState extends State<MainNavigation> {
             label: 'Settings',
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Lightweight branded wait state while session restore runs.
+class _CheckingSignInSplash extends StatelessWidget {
+  const _CheckingSignInSplash();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.lock_outline,
+                  size: 56,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  'Private Messenger',
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Checking sign-in…',
+                  style: theme.textTheme.bodyLarge,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 28),
+                const CircularProgressIndicator(),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

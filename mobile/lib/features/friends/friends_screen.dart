@@ -167,9 +167,11 @@ class _FriendsScreenState extends State<FriendsScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
+        title: Text(
           'Friends',
-          style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
+          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
         ),
         actions: [
           if (controller != null)
@@ -193,7 +195,8 @@ class _FriendsScreenState extends State<FriendsScreen> {
                   ),
                   const SizedBox(height: 8),
                   const Text(
-                    'Only you can see your friends and friend count.',
+                    'Only you can see your friends list. Add someone by email, '
+                    'accept their request, then open Chats to message or call.',
                     style: TextStyle(fontSize: 16),
                   ),
                   const SizedBox(height: 20),

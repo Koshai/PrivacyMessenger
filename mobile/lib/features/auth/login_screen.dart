@@ -94,8 +94,9 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 12),
                   const Text(
-                    'Enter your email to request '
-                    'a verification code.',
+                    'Enter your email to get a six-digit sign-in code. '
+                    'After you verify, use Friends to add contacts, then '
+                    'open a chat to message or call.',
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 32),

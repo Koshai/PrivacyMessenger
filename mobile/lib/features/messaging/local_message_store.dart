@@ -404,6 +404,33 @@ class LocalMessageStore implements InboundMessageHistory {
     });
   }
 
+  /// Newest decrypted row in [conversationId], or null when empty / unknown.
+  ///
+  /// Prefers the highest [conversationSeq], then latest [createdAt].
+  Future<LocalMessageRecord?> latestInConversation(String conversationId) {
+    return _enqueue(() async {
+      if (conversationId.trim().isEmpty) {
+        throw ArgumentError.value(
+          conversationId,
+          'conversationId',
+          'conversation id is empty',
+        );
+      }
+      final rows = await _requireDb().query(
+        _messagesTable,
+        where:
+            'owner_user_id = ? AND owner_device_id = ? AND conversation_id = ?',
+        whereArgs: [userId, deviceId, conversationId],
+        orderBy:
+            'CASE WHEN conversation_seq IS NULL THEN 1 ELSE 0 END, '
+            'conversation_seq DESC, created_at DESC, client_message_id DESC',
+        limit: 1,
+      );
+      if (rows.isEmpty) return null;
+      return _decryptRow(rows.first);
+    });
+  }
+
   Future<void> deleteMessage({
     required String conversationId,
     required String clientMessageId,

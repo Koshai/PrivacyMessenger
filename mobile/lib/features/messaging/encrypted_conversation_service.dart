@@ -11,6 +11,8 @@ import '../../core/network/api_client.dart'
 import '../calling/call_auth.dart';
 import '../calling/call_auth_session.dart';
 import '../calling/call_binding_inbox.dart';
+import '../chats/chat_list_format.dart';
+import '../chats/conversation_peer_index.dart';
 import 'delivery_timing.dart';
 import 'local_message_store.dart';
 import 'models/envelope.dart';
@@ -126,6 +128,7 @@ class EncryptedConversationService {
     this.inbox,
     this.engine,
     this.history,
+    this.peerIndex,
     this.submitTimeout = const Duration(seconds: 15),
   });
 
@@ -134,6 +137,7 @@ class EncryptedConversationService {
   final CallBindingInbox? inbox;
   final MlsGroupEncryptionService? engine;
   final InboundMessageHistory? history;
+  final ConversationPeerIndex? peerIndex;
 
   /// Bounds only the envelope HTTP submit. MLS encryption is not cancelled
   /// by this timer and is not repeated after it has produced ciphertext.
@@ -657,6 +661,50 @@ class EncryptedConversationService {
 
   void bindConversationPeer(String conversationId, String peerUserId) {
     _peerByConversation[conversationId] = peerUserId;
+    final index = peerIndex;
+    if (index != null) {
+      unawaited(
+        index.bind(conversationId: conversationId, peerUserId: peerUserId),
+      );
+    }
+  }
+
+  /// Local-only chat list preview for [peerUserId]. Returns null when this
+  /// device has never bound a conversation id for that peer.
+  Future<ChatListPreview?> previewForPeer({
+    required String peerUserId,
+    required String myUserId,
+    DateTime? now,
+  }) async {
+    final stored = history;
+    if (stored is! LocalMessageStore) return null;
+    final index = peerIndex;
+    if (index != null) {
+      await index.load();
+    }
+    final conversationId = index?.conversationIdForPeer(peerUserId) ??
+        _conversationIdForPeer(peerUserId);
+    if (conversationId == null || conversationId.isEmpty) return null;
+    final latest = await stored.latestInConversation(conversationId);
+    if (latest == null) {
+      return ChatListPreview(
+        subtitle: 'No messages yet',
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+        timeLabel: null,
+      );
+    }
+    return chatListPreviewFromRecord(
+      latest,
+      myUserId: myUserId,
+      now: now,
+    );
+  }
+
+  String? _conversationIdForPeer(String peerUserId) {
+    for (final entry in _peerByConversation.entries) {
+      if (entry.value == peerUserId) return entry.key;
+    }
+    return null;
   }
 
   Future<List<ChatMessageView>> ingestEnvelopes({

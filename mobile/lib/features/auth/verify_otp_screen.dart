@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../core/network/api_client.dart';
 import '../../core/auth/auth_controller.dart';
 import '../../core/auth/auth_state.dart';
+import '../../core/network/api_client.dart';
+import '../../core/platform/device_label.dart';
 
 class VerifyOtpScreen extends StatefulWidget {
   final String email;
@@ -55,7 +56,7 @@ class _VerifyOtpScreenState extends State<VerifyOtpScreen> {
       final session = await widget.apiClient.verifyOtp(
         challengeId: widget.challengeId,
         code: _codeController.text,
-        deviceName: 'Android',
+        deviceName: deviceLabelForPlatform(),
       );
 
       if (!mounted) return;
