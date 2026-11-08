@@ -1,10 +1,12 @@
-# Android Release-Candidate Readiness — Step 19.7.30D
+# Android Release-Candidate Readiness — Step 19.7.30E
 
 ## Decision
 
 **NOT READY**
 
-Required physical two-device acceptance evidence is missing. Accessibility smoke after lock is incomplete. Do not publish or distribute a new APK from this milestone.
+Mandatory real-device two-party acceptance did not run: Device B was not available, and Device A remained behind a secure keyguard for the 30E accessibility window. Outstanding security/data-preservation items were reviewed; none were closed without evidence.
+
+Do not publish or distribute a new APK from this milestone.
 
 ## Decision rubric (applied)
 
@@ -12,52 +14,47 @@ Required physical two-device acceptance evidence is missing. Accessibility smoke
 | --- | --- |
 | One-device session/history survives update & process death | Yes (30A–30D) |
 | Messaging outbox fail-closed + server idempotency | Yes (tests + local DB e2e) |
-| Bidirectional encrypted messaging on two physical devices after UX batches | **No** — Device B absent |
+| Bidirectional encrypted messaging on two physical devices after UX batches | **No** — Device B absent (30E) |
 | Bidirectional audio + video with real media evidence | **No** — Device B absent |
 | TURN selected-pair / hard network transitions | **No** |
-| Physical TalkBack / large-font critical-path smoke (30D) | **Incomplete** (secure keyguard) |
+| Physical TalkBack / large-font critical-path smoke | **No** — keyguard locked throughout 30E poll |
+| Explicit review of logout/MLS wipe + cross-store crash window | Yes — remain open/disclosed (RB-30A-001, RB-30B-002) |
 | Store-grade release signing + R8 validation | **No** (debug signing by design for validation) |
-| Crash-reporting / support diagnostics policy | Deferred (no third-party SDK) |
+| Crash-reporting / support diagnostics policy | Deferred |
 
 ## Readiness classes (reference)
 
 | Status | When to use |
 | --- | --- |
-| **NOT READY** | Missing required physical acceptance or security/data-loss blockers for any external exposure |
-| READY FOR CONTROLLED EXTERNAL BETA | Two-device messaging + A/V matrices pass; known limitations documented; signed validation channel agreed |
+| **NOT READY** | Missing required physical acceptance or unresolved external-beta blockers |
+| READY FOR CONTROLLED EXTERNAL BETA REVIEW | Two-device messaging + A/V matrices pass with media evidence; limitations disclosed; distribution channel agreed |
 | READY FOR PUBLIC RELEASE REVIEW | Store signing, R8, a11y, crash policy, and production ops review complete |
 
-This milestone selects **NOT READY** only.
+This milestone selects **NOT READY**.
 
-## What is solid enough for *internal* engineering use
-
-- Debug-signed validation APKs on known devices with preserved MLS/history
-- Automated Flutter (319) + Go internal short + DB-backed envelope idempotency
-- Lifecycle smoke on SM-S938U (force-stop, bg/fg, reopen chat)
-- Calling lifecycle code/tests (30C); one-device affordance checks
-
-Internal engineering ≠ controlled external beta.
-
-## Blocking evidence still required
-
-1. Attach Device B; run `ANDROID_PHYSICAL_ACCEPTANCE.md` messaging + audio + video rows with **real media** evidence.
-2. Complete TalkBack / large-font smoke on unlocked SM-S938U (and preferably Device B).
-3. Close or explicitly defer RB-30B-001 / RB-30C-001 / RB-30C-002 with evidence.
-4. Agree signing/versionCode policy before any wider distribution.
-
-## Inspect-only release artifact (not distributed)
+## 30E environment snapshot
 
 | Item | Value |
 | --- | --- |
-| Built | `mobile/build/app/outputs/flutter-apk/app-release.apk` (~117.2 MB) |
-| SHA-256 | `7866DE3EA147B02DB540F35A3C4B1649A3962BF2B5ADF0E2279E1F941638EF1D` |
-| Signing | Android Debug (same SHA-256 as installed validation identity) |
-| Installed on SM-S938U? | **No** |
+| Git | `ae4d2fb7f1d2db04cd4507cbc03d4bfd57b5aa1c` (= `origin/master`) |
+| Device A | SM-S938U; app `1.0.0` (1); Android Debug cert `b694351d…803e85` |
+| Device B | Not attached |
+| Installs performed | None |
+| Backend / coturn | Unchanged |
+| Remote tester sheet | `ANDROID_EXTERNAL_TESTER_30E.md` |
+
+## What remains before any “controlled beta review” status
+
+1. Unlock Device A (owner); complete TalkBack/large-font rows X-01+.
+2. Attach or remotely execute Device B checklist; fill messaging M-01+ and calling A/V rows with **real** content/media evidence.
+3. Keep RB-30A-001 / RB-30B-002 disclosed; do not pretend they are fixed.
+4. Agree how external testers receive APKs without swapping signing identities on established devices.
 
 ## Related docs
 
-- `ANDROID_LIFECYCLE_30D.md`
-- `ANDROID_RELEASE_BLOCKERS.md`
 - `ANDROID_PHYSICAL_ACCEPTANCE.md`
-- `MESSAGING_RELIABILITY_MATRIX_30B.md`
+- `ANDROID_RELEASE_BLOCKERS.md`
+- `ANDROID_EXTERNAL_TESTER_30E.md`
+- `ANDROID_LIFECYCLE_30D.md`
 - `ANDROID_CALLING_ACCEPTANCE_30C.md`
+- `MESSAGING_RELIABILITY_MATRIX_30B.md`

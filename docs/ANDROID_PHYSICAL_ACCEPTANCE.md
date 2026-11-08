@@ -1,85 +1,102 @@
-# Android Physical Acceptance — Rollup (through 19.7.30D)
+# Android Physical Acceptance — Rollup (through 19.7.30E)
 
-Single index of physical-device evidence. Detail matrices live in 30B/30C docs; this file tracks pass/fail/pending for RC gating.
+Single index of physical-device evidence. Detail matrices: 30B messaging, 30C calling, 30D lifecycle, 30E gate.
 
-**Devices:** A = SM-S938U (`R5CXC2SA8HJ`). B = second handset (**not attached** as of 30D).
+**Devices (30E audit):**
 
-**Policy:** Do not mark media rows Pass from SDP/ICE/UI alone. Do not clear/logout/uninstall established installs.
+| Role | Identity | App | Signing SHA-256 | Status |
+| --- | --- | --- | --- | --- |
+| A | SM-S938U `R5CXC2SA8HJ`, Android 17 | `1.0.0` / versionCode `1`, lastUpdate 2026-11-07 23:17:41 | `b694351d88992798ea347584901d77247591010cbcec4e77a2d115be4a803e85` (Android Debug) | Attached; **keyguard locked** during 30E window |
+| B | Second handset | — | Unknown (do not assume match) | **Not attached** (ADB: only A + offline `emulator-5554`) |
+
+**Git tip at 30E:** `ae4d2fb7f1d2db04cd4507cbc03d4bfd57b5aa1c` (matches `origin/master`).
+
+**Policy:** Do not mark media Pass from SDP/ICE/UI alone. No uninstall/clear/logout on established installs. Remote tester sheet: `ANDROID_EXTERNAL_TESTER_30E.md`.
+
+## Phase 0 — Installation safety (30E)
+
+| Check | Result |
+| --- | --- |
+| Package | `com.privatemessenger.private_messenger` |
+| ABI | `arm64-v8a` |
+| New install attempted | **No** — Device B absent; A already on matching debug-signed build; keyguard blocked further UI |
+| Backend / coturn changes | None |
 
 ## Messaging
 
-| ID | Check | A | B | Status |
-| --- | --- | --- | --- | --- |
-| M-01 | Bidirectional encrypted send/receive | — | — | **Pending** (Device B) |
-| M-02 | Existing history after update | Pass (30A/30B) | Pending | Open until B |
-| M-03 | Order + dedup under reconnect | Code/tests | Pending | Partial |
-| M-04 | Offline/reconnect recovery | Partial (lifecycle) | Pending | Open |
-| M-05 | Safe failure-state presentation | Pass (UI/tests) | Pending | Partial |
-| M-06 | History after force-stop / bg-fg | Pass (30D) | — | One-device Pass |
-
-Detail: `MESSAGING_RELIABILITY_MATRIX_30B.md`.
+| ID | Check | Env | Expected | Observed | Status | Evidence | Blocker |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| M-01 | Bidirectional encrypted send/receive | A+B validation | Content match both ways | Not run | **Pending** | Device B missing | RB-30B-001 |
+| M-02 | Existing history after update | A | Readable history | Pass (30A/30B) | Pass (A) | Prior | — |
+| M-03 | Order + dedup | A+B | No missing/dupes | Not run two-device | **Pending** | — | RB-30B-001 |
+| M-04 | Offline/reconnect | A+B | Honest status + recover | Not run 30E | **Pending** | — | RB-30B-001 |
+| M-05 | Safe failure presentation | — | Fail-closed labels | Pass (tests/UI) | Partial | 30B | — |
+| M-06 | History after force-stop / bg-fg | A | Readable | Pass (30D) | Pass (A) | 30D | — |
+| M-07 | Bg/reopen both apps after live exchange | A+B | History intact | Not run | **Pending** | Device B | RB-30B-001 |
 
 ## Audio calling
 
-| ID | Check | Status |
-| --- | --- | --- |
-| A-01 / A-02 | Bidirectional audible audio both directions | **Pending** (Device B) — RB-30C-001 |
-| A-03 | Mute / speaker | Pending |
-| A-04 | Hangup either side + cleanup | Pending |
-| A-05 | Repeat calls after cleanup | Pending (auto cleanup exists) |
+| ID | Direction | Expected | Observed | Status | Blocker |
+| --- | --- | --- | --- | --- | --- |
+| A-01 | A→B audible + auth | Two-way hear; mute/speaker; hangup cleanup | Not run | **Pending** | RB-30C-001 |
+| A-02 | B→A same | Same | Not run | **Pending** | RB-30C-001 |
+| A-03 | Consecutive successes (target 5/dir) | Stable setup | Not run | **Pending** | RB-30C-001 |
+| A-04 | Hangup each side + mic cleanup | No stuck mic | Not run | **Pending** | RB-30C-001 |
 
-Prior two-device video success (pre-UX) is **historical** and does not close post-UX acceptance.
+Prior pre-UX two-device video does **not** close these rows.
 
 ## Video calling
 
+| ID | Direction | Expected | Observed | Status | Blocker |
+| --- | --- | --- | --- | --- | --- |
+| V-01 | A→B video+audio | Live remote + audio; preview rules | Not run | **Pending** | RB-30C-002 |
+| V-02 | B→A | Same | Not run | **Pending** | RB-30C-002 |
+| V-03 | Cam off/on + flip | Works mid-call | Not run | **Pending** | RB-30C-002 |
+| V-04 | Back confirm/cancel + post-hangup recall | Spec behavior | Not run | **Pending** | RB-30C-003 |
+
+## Network / TURN
+
+| ID | Check | Status | Blocker |
+| --- | --- | --- | --- |
+| N-01 | Independent Wi-Fi | **Pending** | RB-30D-001 |
+| N-02 | Cellular / migration clean fail | **Pending** | RB-30C-005 |
+| N-03 | Selected ICE pair type (relay only if selected) | **Pending** — no forced TURN change | RB-30C-004 |
+
+## Lifecycle (carry-forward)
+
 | ID | Check | Status |
 | --- | --- | --- |
-| V-01 / V-02 | Bidirectional visible video + audible audio | **Pending** — RB-30C-002 |
-| V-03 | Local preview / cam off / switch | Pending (widget coverage) |
-| V-04 | Back confirm / remote hangup cleanup | Pending |
-
-Detail: `ANDROID_CALLING_ACCEPTANCE_30C.md` (C30-A\*, C30-V\*, C30-B\*).
-
-## Network
-
-| ID | Check | Status |
-| --- | --- | --- |
-| N-01 | Different Wi-Fi SSIDs | Pending |
-| N-02 | Wi-Fi ↔ cellular mid-call | Pending / unsupported clean-end expectation — RB-30C-005 |
-| N-03 | TURN relay selected pair (privacy-safe type only) | Pending — RB-30C-004 |
-
-## Lifecycle (one-device, 30D)
-
-| ID | Check | Status |
-| --- | --- | --- |
-| L-01 | Bg/fg reopen chat | Pass |
-| L-02 | Force-stop cold start + session | Pass |
-| L-03 | Lock → unlock UI resume | Incomplete (PIN keyguard) |
+| L-01 | Bg/fg reopen chat (A) | Pass (30D) |
+| L-02 | Force-stop cold start + session (A) | Pass (30D) |
+| L-03 | Lock → unlock UI resume | **Incomplete** — 30E still on PIN keyguard; PIN not requested |
 | L-04 | Network loss backgrounded | Not run |
-
-Detail: `ANDROID_LIFECYCLE_30D.md`.
 
 ## Accessibility smoke (physical)
 
-| ID | Check | Status |
-| --- | --- | --- |
-| X-01 | TalkBack critical path | **Incomplete** (device locked after lock test) |
-| X-02 | Large font primary actions | Incomplete |
-| X-03 | OTP / login | Not re-run (session preserved; do not logout) |
-| X-04 | Chats / Friends / Settings | Prior 29E/30A; 30D re-smoke blocked by keyguard |
-| X-05 | Message status / retry copy | Code + prior UX |
-| X-06 | Safety-number screen | Prior 29E |
-| X-07 | Call controls / dialogs | One-device affordances 30C; TalkBack pending |
-| X-08 | Error / permission recovery | Emulator preferred for deny flows — pending |
+| ID | Check | Status | Notes |
+| --- | --- | --- | --- |
+| X-01 | TalkBack critical path | **Incomplete** | Device locked entire 30E automation window |
+| X-02 | Large font | Incomplete | Same |
+| X-03–X-08 | OTP/tabs/status/safety/call/dialogs/errors | Incomplete / prior 29E code only | Do not claim physical pass |
 
-Inaccessible critical action → treat as release **blocker**. None newly filed from 30D because smoke did not complete.
+No new inaccessible critical action filed — smoke did not execute.
+
+## Security / data preservation (30E observation window)
+
+| Check | Result |
+| --- | --- |
+| Unexpected sign-out | Not observed (app pid still present; UI behind keyguard) |
+| Destructive logout / account switch tested | **Not performed** (forbidden on established) |
+| MLS/history cross-store crash window | Remains **open** (RB-30B-002) |
+| Premature call auth UI / stuck cam | Not exercised (no live calls) |
 
 ## Gate summary
 
 | Gate | Result |
 | --- | --- |
-| One-device data preservation | Met |
+| One-device data preservation | Met (prior) |
 | Two-device messaging | **Not met** |
 | Two-device audio/video | **Not met** |
 | Accessibility physical smoke | **Not met** |
-| RC readiness | **NOT READY** (`ANDROID_RC_READINESS.md`) |
+| Narrow code fix required this milestone | **No** (blocked on devices/unlock, not a new defect) |
+| RC readiness | **NOT READY** |
