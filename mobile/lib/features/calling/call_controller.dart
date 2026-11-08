@@ -93,6 +93,12 @@ class CallController extends ChangeNotifier {
   bool cameraEnabled = true;
   DateTime? connectedAt;
 
+  /// Last media type the user tried to use (for permission recovery copy).
+  CallMediaType? lastRequestedMediaType;
+
+  /// True when the latest failure was a mic/camera permission denial.
+  bool permissionFailure = false;
+
   /// True only after a local WebRTC connected/completed indication.
   bool localMediaConnected = false;
 
@@ -219,10 +225,13 @@ class CallController extends ChangeNotifier {
     }
     _beginCall();
     error = null;
+    permissionFailure = false;
+    lastRequestedMediaType = mediaType;
     final gen = _generation;
     final allowed = await requestPermissions(mediaType);
     if (!_isCurrent(gen)) return;
     if (!allowed) {
+      permissionFailure = true;
       error = 'Microphone${mediaType == CallMediaType.video ? '/camera' : ''} permission denied';
       phase = CallPhase.failed;
       notifyListeners();
@@ -286,9 +295,11 @@ class CallController extends ChangeNotifier {
     DeliveryTiming.record('call_accept_tap', 0);
     // Disarm ring timeout before any await so Accept cannot race HangUp.
     _ringTimer?.cancel();
+    lastRequestedMediaType = current.mediaType;
     final allowed = await requestPermissions(current.mediaType);
     if (!_isCurrent(gen) || session?.id != callId) return;
     if (!allowed) {
+      permissionFailure = true;
       error = 'Permission denied';
       phase = CallPhase.failed;
       notifyListeners();
@@ -406,6 +417,18 @@ class CallController extends ChangeNotifier {
     }
   }
 
+  /// Clears a terminal failed/ended screen without starting a new call.
+  void dismissFailedCall() {
+    if (phase != CallPhase.failed && phase != CallPhase.ended) return;
+    _endedIdleTimer?.cancel();
+    permissionFailure = false;
+    error = null;
+    phase = CallPhase.idle;
+    session = null;
+    _ending = false;
+    notifyListeners();
+  }
+
   Future<void> hangUp({String reason = 'hangup'}) async {
     if (_ending || phase == CallPhase.idle || phase == CallPhase.ended) return;
     _ending = true;
@@ -434,6 +457,7 @@ class CallController extends ChangeNotifier {
   Future<void> onAppLifecycle(AppLifecycleState state) async {
     switch (state) {
       case AppLifecycleState.resumed:
+        await refreshPermissionFailure();
         await reconcileActive();
         await recheckPeerIdentity();
       case AppLifecycleState.detached:
@@ -443,6 +467,20 @@ class CallController extends ChangeNotifier {
       case AppLifecycleState.hidden:
         break;
     }
+  }
+
+  /// After returning from system settings, clear a permission failure so the
+  /// user can start a new call. Does not auto-redial.
+  Future<void> refreshPermissionFailure() async {
+    if (!permissionFailure || phase != CallPhase.failed) return;
+    final type = lastRequestedMediaType ?? CallMediaType.audio;
+    final allowed = await requestPermissions(type);
+    if (!allowed) return;
+    permissionFailure = false;
+    error = null;
+    phase = CallPhase.idle;
+    session = null;
+    notifyListeners();
   }
 
   /// Ends the call when the pinned peer is no longer enrolled.
@@ -671,7 +709,9 @@ class CallController extends ChangeNotifier {
     _processedOffers.clear();
     _authGeneration = null;
     enrollmentRecheckDeferred = false;
+    permissionFailure = false;
     _disconnectTimer?.cancel();
+    _endedIdleTimer?.cancel();
     phase = CallPhase.idle;
     session = null;
   }
@@ -987,7 +1027,8 @@ class CallController extends ChangeNotifier {
     if (!_disposed) notifyListeners();
     final endedGen = _generation;
     if (ended) {
-      _endedIdleTimer = Timer(const Duration(milliseconds: 400), () {
+      // Brief hold so users can read "Call ended" before the overlay dismisses.
+      _endedIdleTimer = Timer(const Duration(milliseconds: 1600), () {
         if (_disposed) return;
         if (phase == CallPhase.ended && _generation == endedGen) {
           phase = CallPhase.idle;
